@@ -15,6 +15,8 @@
 # One term per line in the file, so a term may hold spaces and commas. The file
 # ADDS to the env var, it does not beat it: both are lists, so there is nothing
 # to override.
+# Lines starting with "#" and blank lines in the FILE are skipped, so a list
+# file can carry its own documentation. A term cannot start with "#".
 #
 # Every term is cleaned on read AND on write: control characters removed, ends
 # trimmed, empty terms dropped, 64 characters per term, 200 terms in total.
@@ -85,10 +87,22 @@ _claudish_keep_norm_fallback() {
     '!seen[$0]++ { if (n < maxn) { print; n++ } }'
 }
 
+# Comment and blank lines in the keep FILE. A "#" at the start of a line
+# (leading whitespace allowed) makes the whole line a comment, which is what
+# lets keep-terms.example document itself and lets a user annotate a long list.
+# Comment lines are BLANKED rather than deleted, so a file of nothing but
+# comments still yields an empty list instead of a grep exit code, and blank
+# lines are dropped by the sanitizer anyway.
+# Documented consequence: a term in the FILE cannot start with "#". The env var
+# has no comment syntax and is unaffected.
+claudish_keep_strip_comments() {  # $1 = file path
+  sed 's/^[[:space:]]*#.*$//' "$1" 2>/dev/null
+}
+
 _claudish_keep_file_contents() {
   _kf="$(claudish_keep_file)"
   [ -f "$_kf" ] || return 0
-  cat "$_kf" 2>/dev/null
+  claudish_keep_strip_comments "$_kf"
 }
 
 # The merged list the prompt uses: env terms first, then file terms.

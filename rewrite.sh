@@ -66,6 +66,9 @@
 #   CLAUDISH_KEEP_TERMS_FILE <path>   one protected term per line
 #                                           (default ~/.claude/claudish-keep-terms,
 #                                           written by /claudish keep)
+#   CLAUDISH_DRIFT     1|0            store the last original and the last rewrite
+#                                           under CLAUDISH_LOCAL_DIR so /claudish
+#                                           drift can compare them (default 1)
 #   CLAUDISH_OLLAMA    <base url>      (default http://localhost:11434)
 #   CLAUDISH_MIN_CHARS <n>            skip messages shorter than this
 #                                           (prose, code stripped) (default 200)
@@ -369,6 +372,19 @@ if [ -z "$rewrite" ]; then
     out="$mdir.orig"; printf '%s' "$full" > "$out" 2>/dev/null && emit "$out"
   fi
   pass_through
+fi
+
+# Keep the last original and the last rewrite side by side for /claudish drift,
+# which reports protected-looking words the rewrite dropped. The rewrite is
+# display-only and was stored nowhere, so drift needs this one small file pair.
+# Overwritten every message, never appended. CLAUDISH_DRIFT=0 skips it entirely.
+# Fail-soft: a write problem here must never cost the user their message.
+if [ "${CLAUDISH_DRIFT:-1}" = "1" ]; then
+  _ld="${CLAUDISH_LOCAL_DIR:-$HOME/.claude/claudish-local}"
+  if mkdir -p "$_ld" 2>/dev/null; then
+    printf '%s' "$full"    > "$_ld/last-original" 2>/dev/null || true
+    printf '%s' "$rewrite" > "$_ld/last-rewrite"  2>/dev/null || true
+  fi
 fi
 
 # ---- build displayContent for the final chunk ----------------------------

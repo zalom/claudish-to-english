@@ -1,0 +1,22 @@
+# claudish protected terms: one term per line.
+#
+# Every word or phrase on this list is reproduced exactly in each rewrite: same
+# spelling, same capital letters. Nothing here is ever read as a pattern, so
+# characters like . + * [ ] are ordinary text.
+#
+# Lines starting with # are comments, blank lines are skipped, and a term
+# therefore cannot start with #. Matching is case-sensitive, so add both
+# spellings if you use both. A term may contain spaces. Limits: 64 characters
+# per term, 200 terms in total.
+#
+# Copy this file, uncomment what applies to you, add your own, then run:
+#   /claudish keep import <your-file>
+#
+# The examples below are commented out, so importing this file unchanged adds
+# nothing. Keep the list to names: protecting an ordinary word like "plan" or
+# "stage" makes every rewrite clumsy.
+#
+# Kubernetes
+# api.example.com
+# RFC 9110
+# post-mortem

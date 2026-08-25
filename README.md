@@ -233,7 +233,9 @@ assistant message, mid-session, with nothing to relaunch:
 /claudish keep intent, savepoint   keep these words exactly as they are in every rewrite
 /claudish keep list                show the protected words and where each one comes from
 /claudish keep remove intent       drop one word from the list
+/claudish keep import FILE         merge a file of terms into the list
 /claudish keep clear               empty the list
+/claudish drift        which protected-looking words the last rewrite dropped
 /claudish last         reprint the ORIGINAL of the last message (handy in replace mode)
 /claudish cycle        step off → append → replace → off
 /claudish reset        clear ALL overrides — back to your env/settings defaults
@@ -383,9 +385,15 @@ provider. A term is always an exact string, never a pattern, so `C++`,
 `a*b`, `[draft]` and `.gitignore` are all ordinary terms, matched and
 removed as whole lines, never as a regular expression or a glob.
 
-The words `list`, `remove` and `clear` cannot be added through `/claudish keep`
-because they are its own sub-words; put them in `CLAUDISH_KEEP_TERMS` or write
-them into the file by hand instead.
+A line starting with `#` (leading whitespace allowed) is a comment, and a
+blank line is skipped, so the file can document itself. The one consequence:
+a term itself can never start with `#`. Comments and blank lines survive
+every `/claudish keep` add and remove, byte for byte; only `/claudish keep
+clear` (the bare word, alone) empties the whole file.
+
+The words `list`, `remove`, `clear` and `import` cannot be added through
+`/claudish keep` because they are its own sub-words; put them in
+`CLAUDISH_KEEP_TERMS` or write them into the file by hand instead.
 
 Both hooks honor the list: the display hook and the Markdown hook.
 
@@ -397,7 +405,32 @@ around it. Keep the list to names, not to everyday words.
 /claudish keep intent, savepoint   keep these words exactly as they are in every rewrite
 /claudish keep list                show the protected words and where each one comes from
 /claudish keep remove intent       drop one word from the list
+/claudish keep import FILE         merge a file of terms into the list (comments and
+                                    blank lines allowed; see keep-terms.example)
 /claudish keep clear               empty the list
+```
+
+## Finding terms to protect
+
+Guessing a list up front is hard, so `/claudish drift` looks at the last
+rewrite instead. It compares the last original message against the last
+rewrite, prints the protected-looking words the rewrite dropped (an
+uppercase letter, a digit, a dot or a hyphen, or simply a long unfamiliar
+word), and prints a ready `/claudish keep ...` line underneath. It never
+adds anything by itself: the candidates are a starting point, not a
+verdict, since a rewrite can drop a word for a good reason. Copy the line,
+cut what does not matter, run the rest.
+
+```
+/claudish drift
+```
+
+`keep-terms.example` at the repo root is a starting point for a list of your
+own: every line in it is commented out, so importing it as shipped adds
+nothing. Copy it, uncomment or add what applies to you, then run:
+
+```
+/claudish keep import /path/to/your-file
 ```
 
 This plugin ships with an empty list. Here is one example, the vocabulary of
@@ -631,6 +664,7 @@ Notes:
 | `CLAUDISH_LANG_FILE` | `~/.claude/claudish-lang` | Runtime language override: a language name in this file wins over `CLAUDISH_LANG` and the settings key, re-checked every message. Written by `/claudish language <name>`. See [Controlling it live](#controlling-it-live-claudish). |
 | `CLAUDISH_KEEP_TERMS` | *(unset)* | Comma separated list of protected terms: words the rewrite must reproduce exactly, never translated, reworded or swapped for a commoner word. Applies to both hooks. Empty = nothing is protected and the prompt is unchanged. See [Protected terms](#protected-terms-keep-list). |
 | `CLAUDISH_KEEP_TERMS_FILE` | `~/.claude/claudish-keep-terms` | Runtime protected-term list, one term per line, re-read every message. It ADDS to `CLAUDISH_KEEP_TERMS` rather than replacing it. Written by `/claudish keep`. See [Controlling it live](#controlling-it-live-claudish). |
+| `CLAUDISH_DRIFT` | `1` | Store the last original assistant message and its last rewrite under `CLAUDISH_LOCAL_DIR`, overwritten every message, so `/claudish drift` can compare them. `0` turns the storing off (and disables `/claudish drift`). `/claudish reset` deletes both files. See [Finding terms to protect](#finding-terms-to-protect). |
 | `CLAUDISH_PROVIDER` | `ollama` | `ollama`, `codex`, `anthropic`, or `openai` — which LLM serves rewrites (both hooks). |
 | `CLAUDISH_MODEL` | *(per provider)* | Model name; overrides the provider default (see [Providers](#providers)). The ollama default `gemma4:26b-mlx` is MLX (Apple-silicon only; Windows users must override). |
 | `CLAUDISH_MODEL_FILE` | `~/.claude/claudish-model` | Runtime model override: a model name in this file wins over `CLAUDISH_MODEL`, re-checked every message (applies to whatever provider is configured). Written by `/claudish model <name>`. See [Controlling it live](#controlling-it-live-claudish). |
@@ -703,6 +737,13 @@ contents) is sent to that API. The same applies to pointing `CLAUDISH_OLLAMA`
 or `CLAUDISH_OPENAI_URL` at a remote/hosted endpoint. Don't switch away from
 local unless you understand and accept it.
 
+With `CLAUDISH_DRIFT=1` (the default) the plugin writes the last assistant
+message and its last rewrite to two files under `~/.claude/claudish-local`,
+overwritten every message, never sent anywhere: this is what
+`/claudish drift` reads. Nothing else stores message content; the usage
+ledger deliberately logs none. `CLAUDISH_DRIFT=0` turns the storing off, and
+`/claudish reset` deletes both files.
+
 ---
 
 ## Layout
@@ -723,6 +764,7 @@ claudish-to-english/
 ├── providers.sh            # provider layer (ollama/anthropic/openai), sourced by both hooks
 ├── lang.sh                 # output-language resolver (env + .claude/settings*.json), sourced by both hooks
 ├── keep-terms.sh           # protected-term list (env + flag file), sourced by both hooks and /claudish
+├── keep-terms.example      # generic starting point for keep import (ships as a no-op)
 ├── CHANGELOG.md            # notable changes per version (Keep a Changelog)
 ├── LICENSE
 └── README.md
@@ -753,7 +795,12 @@ Evals spend real model calls and are run by hand.
   duplicates, terms with spaces and with glob characters survive, sanitizing
   and the 64 character and 200 term caps hold, the glossary sits between the
   framing line and the context line, and a `/claudish keep` add, list, remove
-  and clear round trip never writes outside its sandbox file.
+  and clear round trip never writes outside its sandbox file. It also covers
+  `#` comments and blank lines in the keep file, that the shipped example
+  file imports as a no-op, a `keep import` round trip that preserves
+  comments, that a fresh `/claudish keep` takes effect on the very next
+  message with no restart, and `/claudish drift` comparing a stored original
+  against a stored rewrite.
 - `evals/rewrite-prompt-eval.sh` replays the fixtures in `evals/fixtures/`
   through the real hook and the real model, several runs each, and counts
   how often the model answered the message instead of rewriting it.

@@ -9,13 +9,16 @@
 #   style-file (default ~/.claude/claudish-style)  tldr|5y -> rewrite style (display hook)
 #   lang-file  (default ~/.claude/claudish-lang)   rewrite language (see lang.sh)
 #   model-file (default ~/.claude/claudish-model)  model (see providers.sh)
-#   keep-file  (default ~/.claude/claudish-keep-terms) one protected term per line
+#   keep-file  (default ~/.claude/claudish-keep-terms) one protected term per
+#              line; a line starting with # (leading whitespace allowed) is a
+#              comment, and blank lines are skipped, so the file can document
+#              itself. A term therefore cannot start with #.
 # rewrite.sh reads mode/style; lang/model/off are shared with rewrite-md.sh.
 # They PERSIST across sessions (like the off-file) until cleared — the dashboard
 # flags any that are in force so that persistence is never a silent surprise,
 # and the SessionStart hook (session-notice.sh) announces them on a new session.
 #
-# Usage: claudish-ctl.sh [status|on|off|append|replace|style [name]|language [name]|model [name]|keep [term]|last|cycle|reset]
+# Usage: claudish-ctl.sh [status|on|off|append|replace|style [name]|language [name]|model [name]|keep [term]|keep import <file>|drift|last|cycle|reset]
 #   status        (default) print the dashboard: every setting, its value, and
 #                 WHERE that value comes from (env / a /claudish flag / default)
 #   on            resume rewrites (keeps the current mode)
@@ -32,8 +35,12 @@
 #   keep X        protect term X from being renamed by the rewrite; several at
 #                 once with commas. "keep list" shows the list and where each
 #                 term comes from, "keep remove X" drops one, "keep clear"
-#                 empties it. The words list, remove and clear cannot be added
-#                 this way; put them in CLAUDISH_KEEP_TERMS or the file instead
+#                 empties it, "keep import FILE" merges in a file of terms
+#                 (one per line, # comments and blank lines allowed; see
+#                 keep-terms.example). Adding never rewrites the file, only
+#                 appends, so comments already in it survive. The words list,
+#                 remove, clear and import cannot be added this way; put them
+#                 in CLAUDISH_KEEP_TERMS or the file instead
 #   last          print the ORIGINAL text of the last assistant message
 #   cycle         off -> append -> replace -> off
 #   reset         clear ALL overrides (off/mode/style/language/model/keep) -> env
@@ -52,6 +59,8 @@ STYLE_FILE="${CLAUDISH_STYLE_FILE:-$HOME/.claude/claudish-style}"
 LANG_FILE="${CLAUDISH_LANG_FILE:-$HOME/.claude/claudish-lang}"
 MODEL_FILE="${CLAUDISH_MODEL_FILE:-$HOME/.claude/claudish-model}"
 KEEP_FILE="${CLAUDISH_KEEP_TERMS_FILE:-$HOME/.claude/claudish-keep-terms}"
+KEEP_NL='
+'
 
 # The /claudish slash command hands the user's whole argument string to us as a
 # QUOTED here-doc on stdin (invoked as `claudish-ctl.sh --stdin-args`). A quoted
@@ -99,6 +108,7 @@ claudish_keep_terms() { :; }
 claudish_keep_file_terms() { :; }
 claudish_keep_env_terms() { :; }
 _claudish_keep_norm() { :; }
+claudish_keep_strip_comments() { :; }
 KEEP_OK=0
 if . "$SELF_DIR/keep-terms.sh" 2>/dev/null; then KEEP_OK=1; fi
 
@@ -231,7 +241,7 @@ dashboard() {
   printf '  %-9s %-16s · %s\n' 'model'    "$(current_model)"    "$_ml"
   printf '  %-9s %-16s · %s\n' 'provider' "${PROVIDER:-ollama}" "$_pl"
   printf '\n  change   /claudish on · off · append · replace · style <tldr|5y> · language <name> · model <name> · keep <term>\n'
-  printf '  other    /claudish keep list · last · cycle · reset (clear all overrides) · status\n'
+  printf '  other    /claudish keep list · drift · last · cycle · reset (clear all overrides) · status\n'
   if [ "$WARN" = "1" ]; then
     printf '\n  ⚠ lines above are /claudish overrides in ~/.claude/claudish-* that persist\n'
     printf '    across sessions. Reset one with its `default` form, or all with /claudish reset.\n'
@@ -252,42 +262,108 @@ keep_write() {  # $1 = newline separated clean terms; empty removes the file
   fi
 }
 
+# Append clean terms to the keep FILE, keeping whatever is already in it
+# (comments included). $1 = newline separated clean terms. Sets KEEP_ADDED to
+# the terms actually written and KEEP_DUP to how many were already there.
+# Membership is an exact whole-line `case` test on a newline-wrapped string: no
+# subprocess, no pipe, and never a pattern match against the term itself.
+keep_append() {
+  KEEP_ADDED=""; KEEP_DUP=0
+  known="${KEEP_NL}$(claudish_keep_file_terms)${KEEP_NL}"
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    case "$known" in
+      *"${KEEP_NL}${t}${KEEP_NL}"*) KEEP_DUP=$((KEEP_DUP + 1)); continue ;;
+    esac
+    KEEP_ADDED="${KEEP_ADDED}${t}${KEEP_NL}"
+    known="${known}${t}${KEEP_NL}"
+  done <<KEEP_APPEND_EOF
+$1
+KEEP_APPEND_EOF
+  [ -n "$KEEP_ADDED" ] || return 0
+  # A leading newline when the file already has content: a stray blank line is
+  # harmless (blank lines are skipped on read) and it is cheaper than probing
+  # whether the last byte is a newline.
+  if [ -s "$KEEP_FILE" ]; then
+    { printf '\n%s' "$KEEP_ADDED" >> "$KEEP_FILE"; } 2>/dev/null || fail "cannot write $KEEP_FILE"
+  else
+    { printf '%s' "$KEEP_ADDED" > "$KEEP_FILE"; } 2>/dev/null || fail "cannot write $KEEP_FILE"
+  fi
+  return 0
+}
+
+# Warn once when the file now holds as many terms as the read path will use.
+# When KEEP_ADDED (set by keep_append) names the terms just written, name
+# whichever of those specifically fell past the cap, so the user learns THEIR
+# term was the one dropped rather than a generic notice.
+keep_cap_note() {
+  c="$(claudish_keep_file_terms | grep -c '[^[:space:]]')"
+  [ "$c" -ge "${CLAUDISH_KEEP_MAX_TERMS:-200}" ] || return 0
+  dropped=""
+  if [ -n "${KEEP_ADDED:-}" ]; then
+    _cftmp="$(mktemp "${TMPDIR:-/tmp}/claudish-capped.XXXXXX" 2>/dev/null)"
+    if [ -n "$_cftmp" ]; then
+      claudish_keep_file_terms > "$_cftmp" 2>/dev/null
+      dropped="$(printf '%s\n' "$KEEP_ADDED" | grep -vFxf "$_cftmp" 2>/dev/null)"
+      rm -f "$_cftmp" 2>/dev/null
+    fi
+  fi
+  if [ -n "$dropped" ]; then
+    printf 'claudish-ctl: the keep list is full at %s terms; not added: %s\n' \
+      "${CLAUDISH_KEEP_MAX_TERMS:-200}" "$(printf '%s' "$dropped" | tr '\n' ',' | sed 's/,/, /g; s/, $//')" >&2
+  else
+    printf 'claudish-ctl: the keep list is full at %s terms; anything past that is ignored\n' \
+      "${CLAUDISH_KEEP_MAX_TERMS:-200}" >&2
+  fi
+  return 0
+}
+
 keep_add() {  # $1 = the whole argument string, comma separated
   new="$(_claudish_keep_norm "$1" "")"
   [ -n "$new" ] || fail "nothing to add (use /claudish keep <term>[, <term>...])"
-  cur="$(claudish_keep_file_terms)"
-  merged="$(_claudish_keep_norm "" "$(printf '%s\n%s\n' "$cur" "$new")")"
-  keep_write "$merged"
-  n="$(printf '%s\n' "$merged" | grep -c '[^[:space:]]')"
-  if [ "$n" -ge "${CLAUDISH_KEEP_MAX_TERMS:-200}" ]; then
-    _mtmp="$(mktemp "${TMPDIR:-/tmp}/claudish-merged.XXXXXX" 2>/dev/null)"
-    dropped=""
-    if [ -n "$_mtmp" ]; then
-      printf '%s\n' "$merged" > "$_mtmp" 2>/dev/null
-      dropped="$(printf '%s\n' "$new" | grep -vFxf "$_mtmp" 2>/dev/null)"
-      rm -f "$_mtmp" 2>/dev/null
-    fi
-    if [ -n "$dropped" ]; then
-      printf 'claudish-ctl: the keep list is full at %s terms; not added: %s\n' \
-        "${CLAUDISH_KEEP_MAX_TERMS:-200}" "$(printf '%s' "$dropped" | tr '\n' ',' | sed 's/,/, /g; s/, $//')" >&2
-    else
-      printf 'claudish-ctl: the keep list is full at %s terms; anything past that is ignored\n' \
-        "${CLAUDISH_KEEP_MAX_TERMS:-200}" >&2
-    fi
-  fi
-  keep_summary added "$new"
+  keep_append "$new"
+  keep_cap_note
+  keep_summary added "$KEEP_ADDED"
 }
 
 keep_remove() {  # $1 = one term, matched as a whole line, commas included
   term="$(_claudish_keep_norm "" "$1")"
   [ -n "$term" ] || fail "usage: /claudish keep remove <term>"
-  cur="$(claudish_keep_file_terms)"
-  out="$(printf '%s\n' "$cur" | grep -vxF -- "$term")"
-  before="$(printf '%s\n' "$cur" | grep -c '[^[:space:]]')"
-  after="$(printf '%s\n' "$out" | grep -c '[^[:space:]]')"
-  [ "$after" -lt "$before" ] || fail "\"$term\" is not in the keep list (see /claudish keep list)"
+  [ -f "$KEEP_FILE" ] || fail "\"$term\" is not in the keep list (see /claudish keep list)"
+  # Match against each raw line with surrounding whitespace trimmed (so a
+  # hand-indented term still matches), then delete by line number. grep -xF
+  # is a whole-line, fixed-string test on the trimmed copy: unlike awk -v it
+  # never expands a backslash in the term and never compares numeric
+  # look-alikes (0, 0.0, 1e3, 1000, +7, 7) as equal. Comments and blank lines
+  # are untouched: a comment never equals a term, so it is never selected.
+  lines="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$KEEP_FILE" | grep -nxF -- "$term" | cut -d: -f1)"
+  [ -n "$lines" ] || fail "\"$term\" is not in the keep list (see /claudish keep list)"
+  sed_expr=""
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    sed_expr="${sed_expr}${sed_expr:+;}${ln}d"
+  done <<KEEP_REMOVE_EOF
+$lines
+KEEP_REMOVE_EOF
+  out="$(sed -e "$sed_expr" "$KEEP_FILE")"
   keep_write "$out"
   keep_summary removed "$term"
+}
+
+keep_import() {  # $1 = path to a file of terms, one per line, # comments allowed
+  p="$1"
+  [ -n "$p" ] || fail "usage: /claudish keep import <file>"
+  # The argument arrives as literal text, so a typed "~" is not expanded yet.
+  case "$p" in "~/"*) p="$HOME/${p#\~/}" ;; esac
+  [ -f "$p" ] && [ -r "$p" ] || fail "cannot read $p"
+  new="$(_claudish_keep_norm "" "$(claudish_keep_strip_comments "$p")")"
+  [ -n "$new" ] || fail "no terms in $p (blank lines and lines starting with # are skipped)"
+  keep_append "$new"
+  added="$(printf '%s' "$KEEP_ADDED" | grep -c '[^[:space:]]')"
+  case "$added" in ''|*[!0-9]*) added=0 ;; esac
+  keep_cap_note
+  printf 'claudish: imported %s: %s added, %s already there\n' "$p" "$added" "$KEEP_DUP"
+  keep_summary
 }
 
 keep_list() {
@@ -360,6 +436,65 @@ case "$cmd" in
     ' "$tp" 2>/dev/null || { printf 'claudish-ctl: could not parse %s\n' "$tp" >&2; exit 1; }
     exit 0
     ;;
+  drift)
+    # Which protected-looking words did the last rewrite drop? rewrite.sh stores
+    # the last original and the last rewrite side by side, so this compares two
+    # halves of the SAME message instead of guessing at a transcript the way
+    # `last` has to. It NEVER changes the keep list: it prints the command to run.
+    [ "$KEEP_OK" = "1" ] || fail "keep-terms.sh not found next to claudish-ctl.sh"
+    LD="${CLAUDISH_LOCAL_DIR:-$HOME/.claude/claudish-local}"
+    if [ ! -f "$LD/last-original" ] || [ ! -f "$LD/last-rewrite" ]; then
+      printf 'claudish-ctl: no stored rewrite yet. Let one assistant message go through with the rewrite on, then run /claudish drift (CLAUDISH_DRIFT=0 turns the storing off).\n' >&2
+      exit 1
+    fi
+    # Fenced code blocks are dropped by the tldr preset by design, so counting
+    # them would report every identifier in every code block as lost.
+    cand="$(awk 'BEGIN{f=0} /^```/{f=!f; next} f==0{print}' "$LD/last-original" \
+      | tr -c 'A-Za-z0-9._-' '\n' \
+      | sed -e 's/^[._-]*//' -e 's/[._-]*$//' \
+      | sort -u)"
+    prot="${KEEP_NL}$(claudish_keep_terms 2>/dev/null)${KEEP_NL}"
+    hits=""; nhits=0
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
+      [ "$nhits" -ge 20 ] && break
+      # Does it look like a term rather than ordinary English? An uppercase
+      # letter after the first position, or a dot, hyphen or digit, or simply
+      # long and not one of a few common words.
+      looks=0
+      case "$tok" in
+        ?*[A-Z]*)        looks=1 ;;
+        *[0-9]*|*.*|*-*) looks=1 ;;
+      esac
+      if [ "$looks" = "0" ] && [ "${#tok}" -ge 8 ]; then
+        case "$tok" in
+          because|therefore|something|everything|different|available|important|following|remaining|assistant|original|question|sentence|probably|actually|anything|possible|together) ;;
+          *) looks=1 ;;
+        esac
+      fi
+      [ "$looks" = "1" ] || continue
+      # Already protected? Exact whole-line test, no subprocess, no pipe.
+      case "$prot" in *"${KEEP_NL}${tok}${KEEP_NL}"*) continue ;; esac
+      # Still in the rewrite? -F so the token is never a pattern, -w so a
+      # substring does not count, reading the file directly so nothing can
+      # take a SIGPIPE.
+      grep -qFw -- "$tok" "$LD/last-rewrite" 2>/dev/null && continue
+      hits="${hits}${hits:+, }$tok"
+      nhits=$((nhits + 1))
+    done <<DRIFT_EOF
+$cand
+DRIFT_EOF
+    if [ -z "$hits" ]; then
+      printf '\n  claudish drift: nothing to flag in the last rewrite.\n\n'
+      exit 0
+    fi
+    printf '\n  claudish drift: in the last original, not in the last rewrite\n\n'
+    printf '  %s\n\n' "$hits"
+    printf '  These are candidates to check, not a verdict: a rewrite may drop a word for good\n'
+    printf '  reasons. Cut the ones that do not matter, then run the rest:\n\n'
+    printf '  /claudish keep %s\n\n' "$hits"
+    exit 0
+    ;;
 esac
 
 # Mutating commands.
@@ -407,10 +542,15 @@ case "$cmd" in
       ''|list) [ "$#" -le 1 ] || { keep_add "$*"; exit 0; }; keep_list; exit 0 ;;
       clear)   [ "$#" -le 1 ] || { keep_add "$*"; exit 0; }; keep_write ""; printf 'claudish: keep list cleared\n'; exit 0 ;;
       remove)  [ "$#" -le 1 ] && fail "usage: /claudish keep remove <term>"; shift; keep_remove "$*"; exit 0 ;;
+      import)  [ "$#" -le 1 ] && fail "usage: /claudish keep import <file>"; shift; keep_import "$*"; exit 0 ;;
       *)       keep_add "$*"; exit 0 ;;
     esac
     ;;
-  reset)   rm -f "$OFF_FILE" "$MODE_FILE" "$STYLE_FILE" "$LANG_FILE" "$MODEL_FILE" "$KEEP_FILE" 2>/dev/null || fail "cannot remove one or more flag files" ;;
+  reset)
+    _ld="${CLAUDISH_LOCAL_DIR:-$HOME/.claude/claudish-local}"
+    rm -f "$OFF_FILE" "$MODE_FILE" "$STYLE_FILE" "$LANG_FILE" "$MODEL_FILE" "$KEEP_FILE" \
+          "$_ld/last-original" "$_ld/last-rewrite" 2>/dev/null || fail "cannot remove one or more flag files"
+    ;;
   cycle)
     case "$(state)" in
       off)    set_mode append ;;
@@ -419,7 +559,7 @@ case "$cmd" in
     esac
     ;;
   *)
-    printf 'claudish-ctl: unknown command "%s" (use status|on|off|append|replace|style [name]|language [name]|model [name]|keep [term]|last|cycle|reset)\n' "$cmd" >&2
+    printf 'claudish-ctl: unknown command "%s" (use status|on|off|append|replace|style [name]|language [name]|model [name]|keep [term]|keep import <file>|drift|last|cycle|reset)\n' "$cmd" >&2
     exit 2
     ;;
 esac
