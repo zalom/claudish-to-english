@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- The rewrite model no longer answers the assistant's message instead of
+  rewriting it. When a message asked the reader for a decision (for example
+  "approve, or name the changes you want"), a small model would treat it as a
+  request addressed to itself and reply to it, and `replace` mode then showed
+  that reply in place of the assistant's words. The system prompt now frames
+  the message strictly as text to rewrite, and the user turn is prefixed with
+  "Rewrite this assistant message:". Replaying one such message five times
+  gave five faithful rewrites, against two hijacked replies in three with the
+  old prompt.
+
 ## [0.6.0] - 2026-08-20
 
 ### Added
