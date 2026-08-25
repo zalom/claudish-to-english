@@ -15,9 +15,6 @@
 #   CLAUDISH_EVAL_AUTH=oauth  evals/rewrite-prompt-eval.sh     # anthropic + the Claude Code token
 #   CLAUDISH_EVAL_AUTH=apikey evals/rewrite-prompt-eval.sh     # anthropic + API key; skips without one
 #   CLAUDISH_EVAL_AUTH=env    evals/rewrite-prompt-eval.sh     # whatever CLAUDISH_* the shell has
-#   CLAUDISH_EVAL_PROVIDERS=/path/to/providers.sh evals/rewrite-prompt-eval.sh
-#       run with another providers.sh (for example a branch that adds a
-#       provider or an auth mode this checkout does not have yet)
 #
 # A run is a HIJACK when the output opens with a first-person reply to the
 # message (refusal, "I cannot see the attachment", "only you can decide"),
@@ -41,7 +38,7 @@ export CLAUDISH_OFF_FILE="$SANDBOX/state/off" CLAUDISH_MODE_FILE="$SANDBOX/state
 export CLAUDISH_MODE=replace CLAUDISH_MIN_CHARS=1 CLAUDISH_NOTICE=0 CLAUDISH_DEBUG=1
 # Auth selection for the anthropic provider. apikey needs CLAUDISH_ANTHROPIC_KEY
 # or ANTHROPIC_API_KEY in the environment; oauth needs a providers.sh that
-# understands CLAUDISH_ANTHROPIC_AUTH=oauth (see CLAUDISH_EVAL_PROVIDERS).
+# understands CLAUDISH_ANTHROPIC_AUTH=oauth.
 AUTH="${CLAUDISH_EVAL_AUTH:-claude}"
 case "$AUTH" in
   claude)
@@ -59,14 +56,13 @@ case "$AUTH" in
 esac
 unset CLAUDISH_STYLE CLAUDISH_PROMPT_FILE CLAUDISH_LANGUAGE 2>/dev/null || true
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
-# The hook under test runs from a sandbox copy so a providers.sh override
-# never touches the checkout.
+# The hook under test runs from a sandbox copy of the checkout.
 PLUG="$SANDBOX/plugin"; mkdir -p "$PLUG"
 cp "$ROOT/rewrite.sh" "$PLUG/rewrite.sh"; [ -f "$ROOT/lang.sh" ] && cp "$ROOT/lang.sh" "$PLUG/lang.sh"
-cp "${CLAUDISH_EVAL_PROVIDERS:-$ROOT/providers.sh}" "$PLUG/providers.sh" || { echo "providers.sh not found" >&2; exit 2; }
+cp "$ROOT/providers.sh" "$PLUG/providers.sh"
 DEBUG_LOG="$TMPDIR/claudish-to-english/debug.log"
-printf 'provider %s (auth %s), model %s, %s run(s) per fixture, providers.sh from %s\n\n' \
-  "${CLAUDISH_PROVIDER:-ollama}" "$AUTH" "${CLAUDISH_MODEL:-default}" "$RUNS" "${CLAUDISH_EVAL_PROVIDERS:-$ROOT/providers.sh}"
+printf 'provider %s (auth %s), model %s, %s run(s) per fixture\n\n' \
+  "${CLAUDISH_PROVIDER:-ollama}" "$AUTH" "${CLAUDISH_MODEL:-default}" "$RUNS"
 
 # The reply shapes a hijacked run opens with. Case-insensitive, start of text.
 REFUSAL='^(i can.?t|i cannot|i don.?t have (access|the)|i do not have|i.m not able|i am not able|i.m unable|i am unable|only you can|i need you to (share|paste|provide)|as an ai|i.m sorry|i am sorry|sorry, )'
