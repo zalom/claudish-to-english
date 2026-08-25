@@ -71,7 +71,7 @@ ANTHROPIC_AUTH="${CLAUDISH_ANTHROPIC_AUTH:-}"
 #                         pause until that window resets (unset = no cap).
 LOCAL_DIR="${CLAUDISH_LOCAL_DIR:-${HOME:-}/.claude/claudish-local}"
 OAUTH_MAX_UTIL="${CLAUDISH_OAUTH_MAX_UTIL:-}"
-oauth_expired=0; oauth_paused=""
+oauth_expired=0; oauth_paused=""   # per-call oauth state, set by _oauth_token and _oauth_cap_check
 ANTHROPIC_KEY="${CLAUDISH_ANTHROPIC_KEY:-${ANTHROPIC_API_KEY:-}}"
 OPENAI_KEY="${CLAUDISH_OPENAI_KEY:-${OPENAI_API_KEY:-}}"
 OPENAI_URL="${CLAUDISH_OPENAI_URL:-https://api.openai.com/v1}"
