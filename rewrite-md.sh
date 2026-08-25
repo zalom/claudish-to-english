@@ -48,6 +48,11 @@
 #                                     ollama; keys, base URLs, and per-provider model
 #                                     defaults are documented in providers.sh)
 #   CLAUDISH_MODEL     <model>        overrides the provider's default model
+#   CLAUDISH_KEEP_TERMS <a,b,c>       protected terms the rewrite must keep exactly
+#                                     as written (see keep-terms.sh)
+#   CLAUDISH_KEEP_TERMS_FILE <path>   one protected term per line
+#                                     (default ~/.claude/claudish-keep-terms,
+#                                     written by /claudish keep)
 #   CLAUDISH_OLLAMA    <base url>     (default http://localhost:11434)
 #   CLAUDISH_MIN_CHARS <n>            skip files whose prose (code stripped) is shorter (default 200)
 #   CLAUDISH_STUB      1|0            deterministic stub instead of the LLM (mechanics testing)
@@ -96,6 +101,11 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # language — instead of stopping rewrites.
 claudish_language() { :; }
 . "$SELF_DIR/lang.sh" 2>/dev/null || dbg "no lang.sh; keeping the file's language"
+
+# Protected-vocabulary resolver (keep-terms.sh). Stubbed first so a missing file
+# degrades to "no protected terms" instead of stopping rewrites.
+claudish_keep_block() { :; }
+. "$SELF_DIR/keep-terms.sh" 2>/dev/null || dbg "no keep-terms.sh; no protected terms"
 
 # Print the canonical absolute path of $1 (its parent directory must exist).
 # Runs in a subshell so the cd never leaks.
@@ -213,6 +223,10 @@ else
       dbg "CLAUDISH_MD_PROMPT_FILE set but empty/unreadable ($CLAUDISH_MD_PROMPT_FILE); using default prompt"
     fi
   fi
+  # Protected vocabulary: appended AFTER the prompt-file replace, so a custom
+  # CLAUDISH_MD_PROMPT_FILE can never drop it. Empty list -> nothing is added.
+  _keep_block="$(claudish_keep_block 2>/dev/null)"
+  [ -n "$_keep_block" ] && sys="$sys"$'\n\n'"$_keep_block"
   llm_complete "$sys" "$body" || pass_through "req build failed"
 fi
 

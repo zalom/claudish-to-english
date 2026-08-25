@@ -230,6 +230,10 @@ assistant message, mid-session, with nothing to relaunch:
 /claudish language     reset to the session/settings language (see "Output language")
 /claudish model X      use model X for whatever provider is configured
 /claudish model        reset to the provider default
+/claudish keep intent, savepoint   keep these words exactly as they are in every rewrite
+/claudish keep list                show the protected words and where each one comes from
+/claudish keep remove intent       drop one word from the list
+/claudish keep clear               empty the list
 /claudish last         reprint the ORIGINAL of the last message (handy in replace mode)
 /claudish cycle        step off → append → replace → off
 /claudish reset        clear ALL overrides — back to your env/settings defaults
@@ -244,6 +248,7 @@ where that value comes from (an env var, a `/claudish` override, your
 
   status    replace          · ⚠ /claudish — rewrite only; beats env, persists across sessions
   style     tldr             · ⚠ /claudish — beats env CLAUDISH_STYLE, persists across sessions
+  keep      3 terms          · ⚠ /claudish - adds to env CLAUDISH_KEEP_TERMS, persists across sessions
   language  French           · ⚠ /claudish — beats env & settings, persists across sessions
   model     gemma4:26b-mlx   · ollama provider default
   provider  ollama           · default
@@ -345,6 +350,62 @@ The display hook still appends the **original user question** to your prompt, as
 context to keep the rewrite on-topic (see
 [How the display hook works](#how-the-display-hook-works)). Your prompt
 replaces only the base instruction.
+
+---
+
+## Protected terms (keep list)
+
+The rewrite is there to simplify wording, and it will also rename things. It
+turned "intent 43" into "step 43", and now the reader is looking for a word
+that does not exist in the tool being described.
+
+A **keep list** is a glossary of words the rewrite must reproduce exactly, same
+spelling and same capital letters, everywhere the original message uses them.
+The model may still add a short plain explanation in brackets after the first
+use of a term, but the term itself always stays.
+
+There are two ways to set it, and they are merged, env first:
+
+- `CLAUDISH_KEEP_TERMS` in `settings.json`, a comma separated list, for a
+  permanent list.
+- `/claudish keep <term>`, for a list that persists in
+  `~/.claude/claudish-keep-terms` and takes effect on the very next message.
+  The file ADDS to the env var, it does not beat it: both are lists, so there
+  is nothing to override.
+
+The file holds one term per line, so a single term may contain spaces and
+commas. Limits: 64 characters per term, 200 terms total. A term is always an
+exact string, never a pattern, so `C++`, `a*b`, `[draft]` and `.gitignore` are
+all ordinary terms, matched and removed as whole lines, never as a regular
+expression or a glob.
+
+The words `list`, `remove` and `clear` cannot be added through `/claudish keep`
+because they are its own sub-words; put them in `CLAUDISH_KEEP_TERMS` or write
+them into the file by hand instead.
+
+Both hooks honor the list: the display hook and the Markdown hook.
+
+A word of caution: a very common word (for example "What" or "How") makes the
+rewrite clumsy, because the model then cannot rephrase an ordinary sentence
+around it. Keep the list to names, not to everyday words.
+
+```
+/claudish keep intent, savepoint   keep these words exactly as they are in every rewrite
+/claudish keep list                show the protected words and where each one comes from
+/claudish keep remove intent       drop one word from the list
+/claudish keep clear               empty the list
+```
+
+This plugin ships with an empty list. Here is one example, the vocabulary of
+the Plastic intent system, to copy and edit:
+
+```json
+{
+  "env": {
+    "CLAUDISH_KEEP_TERMS": "Plastic,intent,Folgezettel,enforcer,savepoint,spec,plan,checklist,outcome,Exec,roadmap,batch,store,INDEX,Active,Future,Completed,worktree,gate,advisor,QMD"
+  }
+}
+```
 
 ---
 
@@ -564,6 +625,8 @@ Notes:
 | `CLAUDISH_PROMPT_FILE` | *(unset)* | Path to a file whose contents replace the display hook's system prompt (whole prompt, not merged). Empty/unreadable falls back to the built-in default. See [Customizing the rewrite prompt](#customizing-the-rewrite-prompt). |
 | `CLAUDISH_LANG` | *(unset)* | Language to rewrite into, e.g. `Esperanto`. Unset falls back to the `language` key in `.claude/settings*.json`; with neither set, the rewrite keeps the input's language. Empty ignores the settings key; `English` forces English. See [Output language](#output-language). |
 | `CLAUDISH_LANG_FILE` | `~/.claude/claudish-lang` | Runtime language override: a language name in this file wins over `CLAUDISH_LANG` and the settings key, re-checked every message. Written by `/claudish language <name>`. See [Controlling it live](#controlling-it-live-claudish). |
+| `CLAUDISH_KEEP_TERMS` | *(unset)* | Comma separated list of protected terms: words the rewrite must reproduce exactly, never translated, reworded or swapped for a commoner word. Applies to both hooks. Empty = nothing is protected and the prompt is unchanged. See [Protected terms](#protected-terms-keep-list). |
+| `CLAUDISH_KEEP_TERMS_FILE` | `~/.claude/claudish-keep-terms` | Runtime protected-term list, one term per line, re-read every message. It ADDS to `CLAUDISH_KEEP_TERMS` rather than replacing it. Written by `/claudish keep`. See [Controlling it live](#controlling-it-live-claudish). |
 | `CLAUDISH_PROVIDER` | `ollama` | `ollama`, `codex`, `anthropic`, or `openai` — which LLM serves rewrites (both hooks). |
 | `CLAUDISH_MODEL` | *(per provider)* | Model name; overrides the provider default (see [Providers](#providers)). The ollama default `gemma4:26b-mlx` is MLX (Apple-silicon only; Windows users must override). |
 | `CLAUDISH_MODEL_FILE` | `~/.claude/claudish-model` | Runtime model override: a model name in this file wins over `CLAUDISH_MODEL`, re-checked every message (applies to whatever provider is configured). Written by `/claudish model <name>`. See [Controlling it live](#controlling-it-live-claudish). |
@@ -655,6 +718,7 @@ claudish-to-english/
 ├── session-notice.sh       # SessionStart hook: announces leftover /claudish overrides on a new session
 ├── providers.sh            # provider layer (ollama/anthropic/openai), sourced by both hooks
 ├── lang.sh                 # output-language resolver (env + .claude/settings*.json), sourced by both hooks
+├── keep-terms.sh           # protected-term list (env + flag file), sourced by both hooks and /claudish
 ├── CHANGELOG.md            # notable changes per version (Keep a Changelog)
 ├── LICENSE
 └── README.md
@@ -679,12 +743,21 @@ Evals spend real model calls and are run by hand.
   marker, writes the 11-column ledger with no message content, and keeps the
   refresh token out of every file and the access token out of the
   environment.
+- `tests/test-keep-terms.sh` runs both hooks and `claudish-ctl.sh` against a
+  sandbox HOME and checks the protected-term list end to end: an empty list
+  leaves the prompt untouched, env and file terms merge in order without
+  duplicates, terms with spaces and with glob characters survive, sanitizing
+  and the 64 character and 200 term caps hold, the glossary sits between the
+  framing line and the context line, and a `/claudish keep` add, list, remove
+  and clear round trip never writes outside its sandbox file.
 - `evals/rewrite-prompt-eval.sh` replays the fixtures in `evals/fixtures/`
   through the real hook and the real model, several runs each, and counts
   how often the model answered the message instead of rewriting it.
   `CLAUDISH_EVAL_AUTH` picks the path: `claude` (default, headless
   `claude -p`), `oauth`, `apikey` (skips without a key), or `env`;
-  `CLAUDISH_EVAL_RUNS` sets the runs per fixture.
+  `CLAUDISH_EVAL_RUNS` sets the runs per fixture. Fixture `05-plastic-terms`
+  measures protected-term survival and is run twice, with and without
+  `CLAUDISH_KEEP_TERMS`.
 
 ## License
 

@@ -1,0 +1,10 @@
+The enforcer finished the How stage on intent 43 and the savepoint now reads How. The spec, the
+plan and the checklist are all on disk in the Plastic store, and the intent file carries a
+Folgezettel id so the chain back to intent 42 stays readable. INDEX lists it under Active.
+
+Exec runs next in its own worktree, one action at a time, with the delivery lock held for the
+whole run. The gate between How and Exec is already open because all three artifacts exist.
+
+Two items on the checklist are still open: the eval numbers, and the docs pass. Everything else
+is checked off. The roadmap batch this intent belongs to has three more intents behind it, and
+QMD has already indexed the discovery deposit for the next one.

@@ -18,9 +18,15 @@
 #
 # A run is a HIJACK when the output opens with a first-person reply to the
 # message (refusal, "I cannot see the attachment", "only you can decide"),
-# or when it drops every anchor the fixture must keep (repo names, commit
+# or when it drops an anchor the fixture must keep (repo names, commit
 # ids, code). Anchors are the lines of fixtures/<name>.keep, one per line;
 # without that file the fixture only checks the refusal patterns.
+#
+# CLAUDISH_KEEP_TERMS is honoured here too (the keep file is isolated into the
+# sandbox, never this machine's real one). Fixture 05-plastic-terms measures
+# protected-term survival: run it once with CLAUDISH_KEEP_TERMS set to the
+# fixture's own anchors and once with it unset, and compare the dropped-anchor
+# counts on that one fixture.
 # Exit 0 when hijacks <= CLAUDISH_EVAL_MAX_HIJACKS (default 0). bash 3.2 safe.
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -34,7 +40,8 @@ trap 'rm -rf "$SANDBOX"' EXIT
 export TMPDIR="$SANDBOX/tmp"; mkdir -p "$TMPDIR" "$SANDBOX/state"
 export CLAUDISH_OFF_FILE="$SANDBOX/state/off" CLAUDISH_MODE_FILE="$SANDBOX/state/mode" \
        CLAUDISH_STYLE_FILE="$SANDBOX/state/style" CLAUDISH_MODEL_FILE="$SANDBOX/state/model" \
-       CLAUDISH_LANG_FILE="$SANDBOX/state/language" CLAUDISH_LOCAL_DIR="$SANDBOX/state"
+       CLAUDISH_LANG_FILE="$SANDBOX/state/language" CLAUDISH_LOCAL_DIR="$SANDBOX/state" \
+       CLAUDISH_KEEP_TERMS_FILE="$SANDBOX/state/keep-terms"
 export CLAUDISH_MODE=replace CLAUDISH_MIN_CHARS=1 CLAUDISH_NOTICE=0 CLAUDISH_DEBUG=1
 # Auth selection for the anthropic provider. apikey needs CLAUDISH_ANTHROPIC_KEY
 # or ANTHROPIC_API_KEY in the environment; oauth needs a providers.sh that
@@ -60,6 +67,7 @@ command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
 PLUG="$SANDBOX/plugin"; mkdir -p "$PLUG"
 cp "$ROOT/rewrite.sh" "$PLUG/rewrite.sh"; [ -f "$ROOT/lang.sh" ] && cp "$ROOT/lang.sh" "$PLUG/lang.sh"
 cp "$ROOT/providers.sh" "$PLUG/providers.sh"
+cp "$ROOT/keep-terms.sh" "$PLUG/keep-terms.sh"
 DEBUG_LOG="$TMPDIR/claudish-to-english/debug.log"
 printf 'provider %s (auth %s), model %s, %s run(s) per fixture\n\n' \
   "${CLAUDISH_PROVIDER:-ollama}" "$AUTH" "${CLAUDISH_MODEL:-default}" "$RUNS"

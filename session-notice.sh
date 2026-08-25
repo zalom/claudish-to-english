@@ -14,7 +14,8 @@
 #
 # Config:
 #   CLAUDISH_NOTICE 1|0   set 0 to stay silent (shared with the rewrite hooks)
-#   CLAUDISH_OFF_FILE / _MODE_FILE / _LANG_FILE / _MODEL_FILE  override paths
+#   CLAUDISH_OFF_FILE / _MODE_FILE / _LANG_FILE / _MODEL_FILE / _KEEP_TERMS_FILE
+#     override paths
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -30,6 +31,7 @@ MODE_FILE="${CLAUDISH_MODE_FILE:-$HOME/.claude/claudish-mode}"
 STYLE_FILE="${CLAUDISH_STYLE_FILE:-$HOME/.claude/claudish-style}"
 LANG_FILE="${CLAUDISH_LANG_FILE:-$HOME/.claude/claudish-lang}"
 MODEL_FILE="${CLAUDISH_MODEL_FILE:-$HOME/.claude/claudish-model}"
+KEEP_FILE="${CLAUDISH_KEEP_TERMS_FILE:-$HOME/.claude/claudish-keep-terms}"
 
 parts=""
 add() { parts="${parts:+$parts, }$1"; }
@@ -56,6 +58,11 @@ fi
 if [ -f "$MODEL_FILE" ]; then
   m="$(head -c 128 "$MODEL_FILE" 2>/dev/null | tr -cd 'A-Za-z0-9:._/-' | head -c 64)"
   [ -n "$m" ] && add "model=$m"
+fi
+
+if [ -f "$KEEP_FILE" ]; then
+  k="$(grep -c '[^[:space:]]' "$KEEP_FILE" 2>/dev/null | tr -d ' ')"
+  case "$k" in ''|0|*[!0-9]*) ;; *) add "keep=$k protected term(s)" ;; esac
 fi
 
 # Nothing overridden -> stay completely silent.

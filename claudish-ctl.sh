@@ -9,12 +9,13 @@
 #   style-file (default ~/.claude/claudish-style)  tldr|5y -> rewrite style (display hook)
 #   lang-file  (default ~/.claude/claudish-lang)   rewrite language (see lang.sh)
 #   model-file (default ~/.claude/claudish-model)  model (see providers.sh)
+#   keep-file  (default ~/.claude/claudish-keep-terms) one protected term per line
 # rewrite.sh reads mode/style; lang/model/off are shared with rewrite-md.sh.
 # They PERSIST across sessions (like the off-file) until cleared — the dashboard
 # flags any that are in force so that persistence is never a silent surprise,
 # and the SessionStart hook (session-notice.sh) announces them on a new session.
 #
-# Usage: claudish-ctl.sh [status|on|off|append|replace|style [name]|language [name]|model [name]|last|cycle|reset]
+# Usage: claudish-ctl.sh [status|on|off|append|replace|style [name]|language [name]|model [name]|keep [term]|last|cycle|reset]
 #   status        (default) print the dashboard: every setting, its value, and
 #                 WHERE that value comes from (env / a /claudish flag / default)
 #   on            resume rewrites (keeps the current mode)
@@ -28,9 +29,14 @@
 #                 (no name / "default" resets to the session/settings language)
 #   model X       use model X for whatever provider is configured (no name /
 #                 "default" resets to the provider default; also turns on)
+#   keep X        protect term X from being renamed by the rewrite; several at
+#                 once with commas. "keep list" shows the list and where each
+#                 term comes from, "keep remove X" drops one, "keep clear"
+#                 empties it. The words list, remove and clear cannot be added
+#                 this way; put them in CLAUDISH_KEEP_TERMS or the file instead
 #   last          print the ORIGINAL text of the last assistant message
 #   cycle         off -> append -> replace -> off
-#   reset         clear ALL overrides (off/mode/style/language/model) -> env
+#   reset         clear ALL overrides (off/mode/style/language/model/keep) -> env
 #
 # Mutating commands print a one-line confirmation:
 #   "claudish: <off|append|replace> (style: …, language: …, model: …)".
@@ -45,6 +51,7 @@ MODE_FILE="${CLAUDISH_MODE_FILE:-$HOME/.claude/claudish-mode}"
 STYLE_FILE="${CLAUDISH_STYLE_FILE:-$HOME/.claude/claudish-style}"
 LANG_FILE="${CLAUDISH_LANG_FILE:-$HOME/.claude/claudish-lang}"
 MODEL_FILE="${CLAUDISH_MODEL_FILE:-$HOME/.claude/claudish-model}"
+KEEP_FILE="${CLAUDISH_KEEP_TERMS_FILE:-$HOME/.claude/claudish-keep-terms}"
 
 # The /claudish slash command hands the user's whole argument string to us as a
 # QUOTED here-doc on stdin (invoked as `claudish-ctl.sh --stdin-args`). A quoted
@@ -85,6 +92,15 @@ dbg() { :; }
 if [ -n "$_saved_mf" ]; then export CLAUDISH_MODEL_FILE="$_saved_mf"; else unset CLAUDISH_MODEL_FILE; fi
 claudish_language() { :; }
 . "$SELF_DIR/lang.sh" 2>/dev/null || true
+# Protected-vocabulary resolver. Stub first, then source; KEEP_OK records whether
+# the real file was found, so a `keep` subcommand fails loudly instead of doing
+# nothing at all.
+claudish_keep_terms() { :; }
+claudish_keep_file_terms() { :; }
+claudish_keep_env_terms() { :; }
+_claudish_keep_norm() { :; }
+KEEP_OK=0
+if . "$SELF_DIR/keep-terms.sh" 2>/dev/null; then KEEP_OK=1; fi
 
 # ---- effective values (each reads its flag file FRESH) --------------------
 current_model() {
@@ -108,6 +124,15 @@ current_style() {
   case "$s" in tldr|5y) printf '%s' "$s"; return ;; esac
   case "${CLAUDISH_STYLE:-}" in tldr|5y) printf '%s' "$CLAUDISH_STYLE" ;; *) printf 'default' ;; esac
 }
+keep_value() {
+  n="$(claudish_keep_terms | grep -c '[^[:space:]]' 2>/dev/null)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  case "$n" in
+    0) printf 'none' ;;
+    1) printf '1 term' ;;
+    *) printf '%s terms' "$n" ;;
+  esac
+}
 state() { [ -f "$OFF_FILE" ] && printf 'off' || current_mode; }
 
 turn_on() { rm -f "$OFF_FILE" 2>/dev/null || fail "cannot remove $OFF_FILE"; }
@@ -128,6 +153,11 @@ style_source() {
     case "$(cat "$STYLE_FILE" 2>/dev/null | tr -d '[:space:]')" in tldr|5y) echo flag; return ;; esac
   fi
   case "${CLAUDISH_STYLE:-}" in tldr|5y) echo env; return ;; esac
+  echo default
+}
+keep_source() {
+  [ -n "$(claudish_keep_file_terms)" ] && { echo flag; return; }
+  [ -n "$(claudish_keep_env_terms)" ]  && { echo env; return; }
   echo default
 }
 lang_source() {
@@ -166,6 +196,13 @@ style_label() {
     *)    printf 'default — plain-language rewrite' ;;
   esac
 }
+keep_label() {
+  case "$(keep_source)" in
+    flag) WARN=1; printf '⚠ /claudish - adds to env CLAUDISH_KEEP_TERMS, persists across sessions' ;;
+    env)  printf 'env CLAUDISH_KEEP_TERMS' ;;
+    *)    printf 'default - no protected terms' ;;
+  esac
+}
 language_label() {
   case "$(lang_source)" in
     flag)     WARN=1; printf '⚠ /claudish — beats env & settings, persists across sessions' ;;
@@ -185,20 +222,91 @@ provider_label() { [ -n "${CLAUDISH_PROVIDER+x}" ] && printf 'env CLAUDISH_PROVI
 
 dashboard() {
   # Compute labels first (they set WARN as a side effect).
-  _sl="$(status_label)"; _yl="$(style_label)"; _ll="$(language_label)"; _ml="$(model_label)"; _pl="$(provider_label)"
+  _sl="$(status_label)"; _yl="$(style_label)"; _kl="$(keep_label)"; _ll="$(language_label)"; _ml="$(model_label)"; _pl="$(provider_label)"
   printf '\n  claudish · plain-language rewrite of each assistant message\n\n'
   printf '  %-9s %-16s · %s\n' 'status'   "$(state)"            "$_sl"
   printf '  %-9s %-16s · %s\n' 'style'    "$(current_style)"    "$_yl"
+  printf '  %-9s %-16s · %s\n' 'keep'     "$(keep_value)"       "$_kl"
   printf '  %-9s %-16s · %s\n' 'language' "$(current_lang)"     "$_ll"
   printf '  %-9s %-16s · %s\n' 'model'    "$(current_model)"    "$_ml"
   printf '  %-9s %-16s · %s\n' 'provider' "${PROVIDER:-ollama}" "$_pl"
-  printf '\n  change   /claudish on · off · append · replace · style <tldr|5y> · language <name> · model <name>\n'
-  printf '  other    /claudish last · cycle · reset (clear all overrides) · status\n'
+  printf '\n  change   /claudish on · off · append · replace · style <tldr|5y> · language <name> · model <name> · keep <term>\n'
+  printf '  other    /claudish keep list · last · cycle · reset (clear all overrides) · status\n'
   if [ "$WARN" = "1" ]; then
     printf '\n  ⚠ lines above are /claudish overrides in ~/.claude/claudish-* that persist\n'
     printf '    across sessions. Reset one with its `default` form, or all with /claudish reset.\n'
   fi
   printf '\n'
+}
+
+# ---- keep terms -----------------------------------------------------------
+# The list the rewrite must never rename. Terms are exact strings: no globbing,
+# no regular expressions, no shell patterns anywhere in here.
+keep_write() {  # $1 = newline separated clean terms; empty removes the file
+  if [ -n "$1" ]; then
+    { printf '%s\n' "$1" > "$KEEP_FILE"; } 2>/dev/null || fail "cannot write $KEEP_FILE"
+  else
+    rm -f "$KEEP_FILE" 2>/dev/null || fail "cannot remove $KEEP_FILE"
+  fi
+}
+
+keep_add() {  # $1 = the whole argument string, comma separated
+  new="$(_claudish_keep_norm "$1" "")"
+  [ -n "$new" ] || fail "nothing to add (use /claudish keep <term>[, <term>...])"
+  cur="$(claudish_keep_file_terms)"
+  merged="$(_claudish_keep_norm "" "$(printf '%s\n%s\n' "$cur" "$new")")"
+  keep_write "$merged"
+  n="$(printf '%s\n' "$merged" | grep -c '[^[:space:]]')"
+  [ "$n" -ge "${CLAUDISH_KEEP_MAX_TERMS:-200}" ] && \
+    printf 'claudish-ctl: the keep list is full at %s terms; anything past that is ignored\n' \
+      "${CLAUDISH_KEEP_MAX_TERMS:-200}" >&2
+  return 0
+}
+
+keep_remove() {  # $1 = one term, matched as a whole line, commas included
+  term="$(_claudish_keep_norm "" "$1")"
+  [ -n "$term" ] || fail "usage: /claudish keep remove <term>"
+  cur="$(claudish_keep_file_terms)"
+  out="$(printf '%s\n' "$cur" | awk -v t="$term" 'NF && $0 != t')"
+  before="$(printf '%s\n' "$cur" | grep -c '[^[:space:]]')"
+  after="$(printf '%s\n' "$out" | grep -c '[^[:space:]]')"
+  [ "$after" -lt "$before" ] || fail "\"$term\" is not in the keep list (see /claudish keep list)"
+  keep_write "$out"
+}
+
+keep_list() {
+  t="$(claudish_keep_terms)"
+  if [ -z "$t" ]; then
+    printf 'claudish keep terms: none. Add one with /claudish keep <term>.\n'
+    printf 'file: %s\n' "$KEEP_FILE"
+    return 0
+  fi
+  e="$(claudish_keep_env_terms)"
+  n="$(printf '%s\n' "$t" | grep -c '[^[:space:]]')"
+  printf 'claudish keep terms (%s):\n' "$n"
+  printf '%s\n' "$t" | while IFS= read -r term; do
+    [ -n "$term" ] || continue
+    if printf '%s\n' "$e" | awk -v t="$term" '$0==t{f=1} END{exit !f}'; then
+      printf '  %-24s env CLAUDISH_KEEP_TERMS\n' "$term"
+    else
+      printf '  %-24s /claudish keep\n' "$term"
+    fi
+  done
+  printf 'file: %s\n' "$KEEP_FILE"
+  [ "$n" -ge "${CLAUDISH_KEEP_MAX_TERMS:-200}" ] && \
+    printf 'note: the list is full at %s terms; anything past that is ignored.\n' \
+      "${CLAUDISH_KEEP_MAX_TERMS:-200}"
+  return 0
+}
+
+keep_summary() {
+  t="$(claudish_keep_terms)"
+  if [ -z "$t" ]; then
+    printf 'claudish: no keep terms (add one with /claudish keep <term>)\n'
+  else
+    n="$(printf '%s\n' "$t" | grep -c '[^[:space:]]')"
+    printf 'claudish: %s keep term(s): %s\n' "$n" "$(printf '%s' "$t" | tr '\n' ',' | sed 's/,/, /g')"
+  fi
 }
 
 cmd="${1:-status}"
@@ -266,7 +374,20 @@ case "$cmd" in
     esac
     turn_on
     ;;
-  reset)   rm -f "$OFF_FILE" "$MODE_FILE" "$STYLE_FILE" "$LANG_FILE" "$MODEL_FILE" 2>/dev/null || fail "cannot remove one or more flag files" ;;
+  keep)
+    [ "$KEEP_OK" = "1" ] || fail "keep-terms.sh not found next to claudish-ctl.sh"
+    shift
+    sub="${1:-list}"
+    case "$sub" in
+      ''|list) keep_list; exit 0 ;;
+      clear)   keep_write ""; printf 'claudish: keep list cleared\n'; exit 0 ;;
+      remove)  shift; keep_remove "$*" ;;
+      *)       keep_add "$*" ;;
+    esac
+    keep_summary
+    exit 0
+    ;;
+  reset)   rm -f "$OFF_FILE" "$MODE_FILE" "$STYLE_FILE" "$LANG_FILE" "$MODEL_FILE" "$KEEP_FILE" 2>/dev/null || fail "cannot remove one or more flag files" ;;
   cycle)
     case "$(state)" in
       off)    set_mode append ;;
@@ -275,7 +396,7 @@ case "$cmd" in
     esac
     ;;
   *)
-    printf 'claudish-ctl: unknown command "%s" (use status|on|off|append|replace|style [name]|language [name]|model [name]|last|cycle|reset)\n' "$cmd" >&2
+    printf 'claudish-ctl: unknown command "%s" (use status|on|off|append|replace|style [name]|language [name]|model [name]|keep [term]|last|cycle|reset)\n' "$cmd" >&2
     exit 2
     ;;
 esac

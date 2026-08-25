@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] - 2026-08-25
 
 ### Added
+- **Protected terms**: a list of words the rewrite must keep exactly as
+  written, so the plain-language pass stops renaming the things it is
+  describing (it had been turning "intent 43" into "step 43"). Set it in
+  `settings.json` with `CLAUDISH_KEEP_TERMS`, or live with `/claudish keep`,
+  which persists one term per line in `~/.claude/claudish-keep-terms` and takes
+  effect on the next message. The two lists are merged. Terms are exact
+  strings, never patterns, and both the display hook and the Markdown hook
+  honor them. With no terms set, the prompt is unchanged.
 - **Anthropic oauth mode, hardened**: on top of PR #20's
   `CLAUDISH_ANTHROPIC_AUTH=oauth`, the access token now comes from the macOS
   login Keychain first (item `Claude Code-credentials`), checked against
