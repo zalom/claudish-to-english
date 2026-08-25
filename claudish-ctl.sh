@@ -244,7 +244,9 @@ dashboard() {
 # no regular expressions, no shell patterns anywhere in here.
 keep_write() {  # $1 = newline separated clean terms; empty removes the file
   if [ -n "$1" ]; then
-    { printf '%s\n' "$1" > "$KEEP_FILE"; } 2>/dev/null || fail "cannot write $KEEP_FILE"
+    _kw_tmp="$(mktemp "${KEEP_FILE}.XXXXXX" 2>/dev/null)" || fail "cannot create a temp file next to $KEEP_FILE"
+    { printf '%s\n' "$1" > "$_kw_tmp"; } 2>/dev/null || { rm -f "$_kw_tmp" 2>/dev/null; fail "cannot write $KEEP_FILE"; }
+    mv -f "$_kw_tmp" "$KEEP_FILE" 2>/dev/null || { rm -f "$_kw_tmp" 2>/dev/null; fail "cannot write $KEEP_FILE"; }
   else
     rm -f "$KEEP_FILE" 2>/dev/null || fail "cannot remove $KEEP_FILE"
   fi
@@ -257,21 +259,35 @@ keep_add() {  # $1 = the whole argument string, comma separated
   merged="$(_claudish_keep_norm "" "$(printf '%s\n%s\n' "$cur" "$new")")"
   keep_write "$merged"
   n="$(printf '%s\n' "$merged" | grep -c '[^[:space:]]')"
-  [ "$n" -ge "${CLAUDISH_KEEP_MAX_TERMS:-200}" ] && \
-    printf 'claudish-ctl: the keep list is full at %s terms; anything past that is ignored\n' \
-      "${CLAUDISH_KEEP_MAX_TERMS:-200}" >&2
-  return 0
+  if [ "$n" -ge "${CLAUDISH_KEEP_MAX_TERMS:-200}" ]; then
+    _mtmp="$(mktemp "${TMPDIR:-/tmp}/claudish-merged.XXXXXX" 2>/dev/null)"
+    dropped=""
+    if [ -n "$_mtmp" ]; then
+      printf '%s\n' "$merged" > "$_mtmp" 2>/dev/null
+      dropped="$(printf '%s\n' "$new" | grep -vFxf "$_mtmp" 2>/dev/null)"
+      rm -f "$_mtmp" 2>/dev/null
+    fi
+    if [ -n "$dropped" ]; then
+      printf 'claudish-ctl: the keep list is full at %s terms; not added: %s\n' \
+        "${CLAUDISH_KEEP_MAX_TERMS:-200}" "$(printf '%s' "$dropped" | tr '\n' ',' | sed 's/,/, /g; s/, $//')" >&2
+    else
+      printf 'claudish-ctl: the keep list is full at %s terms; anything past that is ignored\n' \
+        "${CLAUDISH_KEEP_MAX_TERMS:-200}" >&2
+    fi
+  fi
+  keep_summary added "$new"
 }
 
 keep_remove() {  # $1 = one term, matched as a whole line, commas included
   term="$(_claudish_keep_norm "" "$1")"
   [ -n "$term" ] || fail "usage: /claudish keep remove <term>"
   cur="$(claudish_keep_file_terms)"
-  out="$(printf '%s\n' "$cur" | awk -v t="$term" 'NF && $0 != t')"
+  out="$(printf '%s\n' "$cur" | grep -vxF -- "$term")"
   before="$(printf '%s\n' "$cur" | grep -c '[^[:space:]]')"
   after="$(printf '%s\n' "$out" | grep -c '[^[:space:]]')"
   [ "$after" -lt "$before" ] || fail "\"$term\" is not in the keep list (see /claudish keep list)"
   keep_write "$out"
+  keep_summary removed "$term"
 }
 
 keep_list() {
@@ -282,29 +298,38 @@ keep_list() {
     return 0
   fi
   e="$(claudish_keep_env_terms)"
+  LF="
+"
   n="$(printf '%s\n' "$t" | grep -c '[^[:space:]]')"
-  printf 'claudish keep terms (%s):\n' "$n"
-  printf '%s\n' "$t" | while IFS= read -r term; do
+  out="claudish keep terms ($n):"$'\n'
+  while IFS= read -r term; do
     [ -n "$term" ] || continue
-    if printf '%s\n' "$e" | awk -v t="$term" '$0==t{f=1} END{exit !f}'; then
-      printf '  %-24s env CLAUDISH_KEEP_TERMS\n' "$term"
-    else
-      printf '  %-24s /claudish keep\n' "$term"
-    fi
-  done
-  printf 'file: %s\n' "$KEEP_FILE"
-  [ "$n" -ge "${CLAUDISH_KEEP_MAX_TERMS:-200}" ] && \
-    printf 'note: the list is full at %s terms; anything past that is ignored.\n' \
-      "${CLAUDISH_KEEP_MAX_TERMS:-200}"
+    case "$LF$e$LF" in
+      *"$LF$term$LF"*) out="${out}  $(printf '%-24s' "$term") env CLAUDISH_KEEP_TERMS"$'\n' ;;
+      *)                out="${out}  $(printf '%-24s' "$term") /claudish keep"$'\n' ;;
+    esac
+  done <<KEEPLIST
+$t
+KEEPLIST
+  out="${out}file: $KEEP_FILE"$'\n'
+  if [ "$n" -ge "${CLAUDISH_KEEP_MAX_TERMS:-200}" ]; then
+    out="${out}note: the list is full at ${CLAUDISH_KEEP_MAX_TERMS:-200} terms; anything past that is ignored."$'\n'
+  fi
+  printf '%s' "$out"
   return 0
 }
 
-keep_summary() {
+keep_summary() {  # $1 optional label ("added"/"removed"), $2 the terms that label applies to
   t="$(claudish_keep_terms)"
-  if [ -z "$t" ]; then
+  n="$(printf '%s\n' "$t" | grep -c '[^[:space:]]' 2>/dev/null)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -eq 0 ]; then
     printf 'claudish: no keep terms (add one with /claudish keep <term>)\n'
+    return 0
+  fi
+  if [ -n "${1:-}" ] && [ -n "${2:-}" ]; then
+    printf 'claudish: %s keep term(s); %s: %s\n' "$n" "$1" "$(printf '%s' "$2" | tr '\n' ',' | sed 's/,/, /g; s/, $//')"
   else
-    n="$(printf '%s\n' "$t" | grep -c '[^[:space:]]')"
     printf 'claudish: %s keep term(s): %s\n' "$n" "$(printf '%s' "$t" | tr '\n' ',' | sed 's/,/, /g')"
   fi
 }
@@ -379,13 +404,11 @@ case "$cmd" in
     shift
     sub="${1:-list}"
     case "$sub" in
-      ''|list) keep_list; exit 0 ;;
-      clear)   keep_write ""; printf 'claudish: keep list cleared\n'; exit 0 ;;
-      remove)  shift; keep_remove "$*" ;;
-      *)       keep_add "$*" ;;
+      ''|list) [ "$#" -le 1 ] || { keep_add "$*"; exit 0; }; keep_list; exit 0 ;;
+      clear)   [ "$#" -le 1 ] || { keep_add "$*"; exit 0; }; keep_write ""; printf 'claudish: keep list cleared\n'; exit 0 ;;
+      remove)  [ "$#" -le 1 ] && fail "usage: /claudish keep remove <term>"; shift; keep_remove "$*"; exit 0 ;;
+      *)       keep_add "$*"; exit 0 ;;
     esac
-    keep_summary
-    exit 0
     ;;
   reset)   rm -f "$OFF_FILE" "$MODE_FILE" "$STYLE_FILE" "$LANG_FILE" "$MODEL_FILE" "$KEEP_FILE" 2>/dev/null || fail "cannot remove one or more flag files" ;;
   cycle)

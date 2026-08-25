@@ -26,12 +26,19 @@ command -v jq >/dev/null 2>&1 || exit 0
 # pipe keeps the hook well-behaved.
 cat >/dev/null 2>&1 || true
 
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 OFF_FILE="${CLAUDISH_OFF_FILE:-$HOME/.claude/claudish-off}"
 MODE_FILE="${CLAUDISH_MODE_FILE:-$HOME/.claude/claudish-mode}"
 STYLE_FILE="${CLAUDISH_STYLE_FILE:-$HOME/.claude/claudish-style}"
 LANG_FILE="${CLAUDISH_LANG_FILE:-$HOME/.claude/claudish-lang}"
 MODEL_FILE="${CLAUDISH_MODEL_FILE:-$HOME/.claude/claudish-model}"
-KEEP_FILE="${CLAUDISH_KEEP_TERMS_FILE:-$HOME/.claude/claudish-keep-terms}"
+
+# Protected-vocabulary resolver. Stubbed first so a missing keep-terms.sh
+# reports zero terms instead of guessing from the raw file (a missing
+# resolver must never announce protection that is not actually happening).
+claudish_keep_count() { printf "0"; }
+. "$SELF_DIR/keep-terms.sh" 2>/dev/null || true
 
 parts=""
 add() { parts="${parts:+$parts, }$1"; }
@@ -60,10 +67,8 @@ if [ -f "$MODEL_FILE" ]; then
   [ -n "$m" ] && add "model=$m"
 fi
 
-if [ -f "$KEEP_FILE" ]; then
-  k="$(grep -c '[^[:space:]]' "$KEEP_FILE" 2>/dev/null | tr -d ' ')"
-  case "$k" in ''|0|*[!0-9]*) ;; *) add "keep=$k protected term(s)" ;; esac
-fi
+k="$(claudish_keep_count 2>/dev/null)"
+case "$k" in ''|0|*[!0-9]*) ;; *) add "keep=$k protected term(s)" ;; esac
 
 # Nothing overridden -> stay completely silent.
 [ -n "$parts" ] || exit 0

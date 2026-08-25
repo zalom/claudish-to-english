@@ -75,7 +75,7 @@ printf 'provider %s (auth %s), model %s, %s run(s) per fixture\n\n' \
 # The reply shapes a hijacked run opens with. Case-insensitive, start of text.
 REFUSAL='^(i can.?t|i cannot|i don.?t have (access|the)|i do not have|i.m not able|i am not able|i.m unable|i am unable|only you can|i need you to (share|paste|provide)|as an ai|i.m sorry|i am sorry|sorry, )'
 
-is_hijack() {  # $1 = rewrite text, $2 = keep-file or empty; prints reason or nothing
+is_hijack() {  # $1 = rewrite text, $2 = keep-file or empty, $3 = reject-file or empty; prints reason or nothing
   _head="$(printf '%s' "$1" | tr -d '\r' | sed -n '1,3p' | tr '\n' ' ' | tr 'A-Z' 'a-z' | sed 's/^[[:space:]#*>_-]*//')"
   if printf '%s' "$_head" | /usr/bin/grep -q -i -E "$REFUSAL"; then printf 'opens with a reply: %s' "$(printf '%s' "$_head" | cut -c1-70)"; return; fi
   if [ -n "$2" ] && [ -f "$2" ]; then
@@ -84,7 +84,17 @@ is_hijack() {  # $1 = rewrite text, $2 = keep-file or empty; prints reason or no
       [ -n "$_a" ] || continue
       case "$1" in *"$_a"*) ;; *) _lost="$_lost${_lost:+, }$_a" ;; esac
     done < "$2"
-    [ -n "$_lost" ] && printf 'dropped anchors: %s' "$_lost"
+    [ -n "$_lost" ] && { printf 'dropped anchors: %s' "$_lost"; return; }
+  fi
+  # Negative anchors: plainer synonyms the drift is known to reach for. A
+  # missing .reject file is a no-op, so fixtures 01-04 are unaffected.
+  if [ -n "${3:-}" ] && [ -f "$3" ]; then
+    _found=""
+    while IFS= read -r _r; do
+      [ -n "$_r" ] || continue
+      case "$1" in *"$_r"*) _found="$_found${_found:+, }$_r" ;; esac
+    done < "$3"
+    [ -n "$_found" ] && printf 'found reject word(s): %s' "$_found"
   fi
 }
 
@@ -92,6 +102,7 @@ total=0; hijacks=0; failed=0
 printf '%-26s %-4s %-7s %s\n' fixture run verdict note
 for fx in "$ROOT"/evals/fixtures/*.txt; do
   name="$(basename "$fx" .txt)"; keep="$ROOT/evals/fixtures/$name.keep"; [ -f "$keep" ] || keep=""
+  reject="$ROOT/evals/fixtures/$name.reject"; [ -f "$reject" ] || reject=""
   msg="$(cat "$fx")"
   i=1
   while [ "$i" -le "$RUNS" ]; do
@@ -107,7 +118,7 @@ printf '%-26s %-4s %-7s %s\n' "$name" "$i" "FAIL" "no rewrite: ${why:-provider e
     else
       # replace mode prefixes the separator label; judge the text after it
       body="$(printf '%s' "$rw" | awk 'f{print} /^💬 /{f=1}')"; [ -n "$body" ] || body="$rw"
-      why="$(is_hijack "$body" "$keep")"
+      why="$(is_hijack "$body" "$keep" "$reject")"
       if [ -n "$why" ]; then hijacks=$((hijacks + 1)); printf '%-26s %-4s %-7s %s\n' "$name" "$i" "HIJACK" "$why"
       else printf '%-26s %-4s %-7s %s\n' "$name" "$i" "ok" "$(printf '%s' "$body" | tr '\n' ' ' | cut -c1-60)..."; fi
     fi

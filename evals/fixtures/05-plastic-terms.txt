@@ -1,10 +1,15 @@
-The enforcer finished the How stage on intent 43 and the savepoint now reads How. The spec, the
-plan and the checklist are all on disk in the Plastic store, and the intent file carries a
-Folgezettel id so the chain back to intent 42 stays readable. INDEX lists it under Active.
+Plastic is walking through delivery for intent 43, the next free ID in line, right after intent
+42, which closed first. Once intent 43 wraps up, intent 44 comes after it and picks up the
+remaining work, so the order runs 42, then 43, then 44.
 
-Exec runs next in its own worktree, one action at a time, with the delivery lock held for the
-whole run. The gate between How and Exec is already open because all three artifacts exist.
+The enforcer went through the plan and the checklist and signed off without changes. A savepoint
+was written right after that, to mark the point where the plan stage closed. Right now the
+branch lives in its own worktree, checked out clean and ready to go. Before Exec starts, a few
+things are still left to do: confirm the worktree sits on the right branch, make sure the
+delivery lock is held for the whole run, and check that QMD has already indexed the discovery
+notes for the next intent in line.
 
-Two items on the checklist are still open: the eval numbers, and the docs pass. Everything else
-is checked off. The roadmap batch this intent belongs to has three more intents behind it, and
-QMD has already indexed the discovery deposit for the next one.
+The branch check came first, the delivery lock came next, and after that the QMD check was the
+last one on the list. All three are done now, so Exec can begin. Once Exec finishes, INDEX gets
+updated to move intent 43 out of Active, and Folgezettel keeps the link back to where the idea
+started, so the chain from intent 42 through intent 43 and on to intent 44 stays easy to follow.

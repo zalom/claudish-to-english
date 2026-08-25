@@ -373,11 +373,15 @@ There are two ways to set it, and they are merged, env first:
   The file ADDS to the env var, it does not beat it: both are lists, so there
   is nothing to override.
 
-The file holds one term per line, so a single term may contain spaces and
-commas. Limits: 64 characters per term, 200 terms total. A term is always an
-exact string, never a pattern, so `C++`, `a*b`, `[draft]` and `.gitignore` are
-all ordinary terms, matched and removed as whole lines, never as a regular
-expression or a glob.
+The file holds one term per line, so hand-editing it (or writing to it
+directly) lets a single term contain spaces and commas. Through `/claudish
+keep` itself a comma always splits into separate terms, so that path cannot
+add a comma inside one term. Limits: 64 characters per term, 200 terms
+total. A full list costs real bytes: at the cap that is roughly 13 KB
+prepended to the system prompt of every assistant message, on every
+provider. A term is always an exact string, never a pattern, so `C++`,
+`a*b`, `[draft]` and `.gitignore` are all ordinary terms, matched and
+removed as whole lines, never as a regular expression or a glob.
 
 The words `list`, `remove` and `clear` cannot be added through `/claudish keep`
 because they are its own sub-words; put them in `CLAUDISH_KEEP_TERMS` or write

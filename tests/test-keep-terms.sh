@@ -65,27 +65,27 @@ case "$sys" in *"$TAIL") check 0 "no keep terms leaves the prompt ending at the 
 # 2. env only
 CLAUDISH_KEEP_TERMS='intent,savepoint' run_hook m2 ""
 sys="$(sysout)"
-has "$LEAD" "$sys" && has 'Protected terms:' "$sys" && has '- intent' "$sys" && has '- savepoint' "$sys"
+has "$LEAD" "$sys" && has 'Protected terms:' "$sys" && has '- "intent"' "$sys" && has '- "savepoint"' "$sys"
 check $? "env CLAUDISH_KEEP_TERMS reaches the prompt"
 
 # 3. file only, including a term with spaces
 printf '%s\n' 'Folgezettel' 'delivery lock' > "$KEEPF"
 run_hook m3 ""
 sys="$(sysout)"
-has '- Folgezettel' "$sys" && has '- delivery lock' "$sys"; check $? "the keep file reaches the prompt, spaces intact"
+has '- "Folgezettel"' "$sys" && has '- "delivery lock"' "$sys"; check $? "the keep file reaches the prompt, spaces intact"
 
 # 4. both, merged in order, duplicates dropped
 printf '%s\n' 'savepoint' 'Folgezettel' > "$KEEPF"
 CLAUDISH_KEEP_TERMS='intent,savepoint' run_hook m4 ""
 list="$(awk '/^- /{print}' "$CLAUDISH_TEST_OUT/sys")"
-[ "$list" = "- intent"$'\n'"- savepoint"$'\n'"- Folgezettel" ]
+[ "$list" = '- "intent"'$'\n''- "savepoint"'$'\n''- "Folgezettel"' ]
 check $? "env terms come first, file terms follow, duplicates dropped once"
 
 # 5. regex and glob metacharacters are ordinary terms
 printf '%s\n' 'C++' 'a*b' '[draft]' '.gitignore' > "$KEEPF"
 run_hook m5 ""
 sys="$(sysout)"
-has '- C++' "$sys" && has '- a*b' "$sys" && has '- [draft]' "$sys" && has '- .gitignore' "$sys"
+has '- "C++"' "$sys" && has '- "a*b"' "$sys" && has '- "[draft]"' "$sys" && has '- ".gitignore"' "$sys"
 check $? "metacharacters survive into the prompt as plain text"
 
 # 6. sanitizing: blank lines dropped, control characters stripped, 64 char cap
@@ -93,10 +93,10 @@ LONG="$(awk 'BEGIN{s="";while(length(s)<80)s=s "x";print s}')"
 { printf '\n'; printf '   spaced term   \n'; printf 'ctrl\ttab\n'; printf '%s\n' "$LONG"; } > "$KEEPF"
 run_hook m6 ""
 sys="$(sysout)"
-has $'\n- \n' "$sys"; [ $? -ne 0 ]; check $? "blank lines never become empty terms"
-has '- spaced term' "$sys"; check $? "a term is trimmed at both ends"
-has '- ctrltab' "$sys"; check $? "control characters are stripped from a term"
-cut="$(awk '/^- x+$/{print length($0) - 2; exit}' "$CLAUDISH_TEST_OUT/sys")"
+has $'\n- ""\n' "$sys"; [ $? -ne 0 ]; check $? "blank lines never become empty terms"
+has '- "spaced term"' "$sys"; check $? "a term is trimmed at both ends"
+has '- "ctrltab"' "$sys"; check $? "control characters are stripped from a term"
+cut="$(awk '/^- "x+"$/{print length($0) - 4; exit}' "$CLAUDISH_TEST_OUT/sys")"
 [ "$cut" = "64" ]; check $? "an over-long term is cut to 64 characters"
 
 # 7. the list is capped at 200 terms
@@ -135,7 +135,7 @@ jq -n --arg f "$MD/note.md" --arg c "$SANDBOX" \
   '{cwd:$c, session_id:"test", tool_input:{file_path:$f}}' \
   | CLAUDISH_MD_DIR="$MD" bash "$PLUG/rewrite-md.sh" >/dev/null
 sys="$(sysout)"
-has "$LEAD" "$sys" && has '- intent' "$sys"; check $? "the Markdown hook carries the glossary"
+has "$LEAD" "$sys" && has '- "intent"' "$sys"; check $? "the Markdown hook carries the glossary"
 
 # 11. /claudish keep round trip, through the real --stdin-args path
 rm -f "$KEEPF"
@@ -161,6 +161,59 @@ CTL keep remove 'a*b' >/dev/null 2>&1
 check $? "no keep file is written outside CLAUDISH_KEEP_TERMS_FILE"
 CTL reset >/dev/null 2>&1
 [ ! -f "$KEEPF" ]; check $? "reset clears the keep file too"
+
+# 12. fix-pass regressions: sub-word guard, exact whole-line remove, closing
+# re-assertion after the glossary, and provenance that does not compare
+# numerically.
+rm -f "$KEEPF"
+CTL keep intent,savepoint >/dev/null 2>&1
+CTL keep clear cache >/dev/null 2>&1
+[ "$(cat "$KEEPF" 2>/dev/null)" = "intent"$'\n'"savepoint"$'\n'"clear cache" ]
+check $? "keep clear cache adds a term instead of wiping the list"
+CTL keep clear >/dev/null 2>&1
+[ ! -f "$KEEPF" ]; check $? "keep clear alone still empties the list"
+
+rm -f "$KEEPF"
+CTL keep list of open questions >/dev/null 2>&1
+[ "$(cat "$KEEPF" 2>/dev/null)" = "list of open questions" ]
+check $? "keep list of open questions adds a term instead of printing the list"
+
+rm -f "$KEEPF"
+CTL keep 'back\slash' >/dev/null 2>&1
+[ "$(cat "$KEEPF" 2>/dev/null)" = 'back\slash' ]
+check $? "a term with a backslash can be added"
+CTL keep remove 'back\slash' >/dev/null 2>&1
+[ ! -f "$KEEPF" ]; check $? "a term with a backslash can be removed"
+
+printf '%s\n' '0.0' '1e3' '1000' '+7' '7' > "$KEEPF"
+CTL keep remove 7 >/dev/null 2>&1
+list="$(cat "$KEEPF" 2>/dev/null)"
+case "$list" in *$'\n'"+7"$'\n'*|"+7"$'\n'*|*$'\n'"+7") ok=0 ;; *) ok=1 ;; esac
+check "$ok" "removing 7 leaves +7 in place (no numeric comparison)"
+CTL keep remove 1000 >/dev/null 2>&1
+list="$(cat "$KEEPF" 2>/dev/null)"
+case "$list" in *"1e3"*) ok=0 ;; *) ok=1 ;; esac
+check "$ok" "removing 1000 leaves 1e3 in place (no numeric comparison)"
+
+run_hook m12 "$T"
+sys="$(sysout)"
+has 'End of protected terms' "$sys"; check $? "the glossary closes with a re-assertion after the term list"
+f="$(awk 'index($0, "Protected terms:") {print NR; exit}' "$CLAUDISH_TEST_OUT/sys")"
+e="$(awk 'index($0, "End of protected terms") {print NR; exit}' "$CLAUDISH_TEST_OUT/sys")"
+c="$(awk 'index($0, "For context, the user asked") {print NR; exit}' "$CLAUDISH_TEST_OUT/sys")"
+[ -n "$f" ] && [ -n "$e" ] && [ -n "$c" ] && [ "$f" -lt "$e" ] && [ "$e" -lt "$c" ]
+check $? "the re-assertion sits after the term list and before the context line"
+
+rm -f "$KEEPF"
+CTL keep 'back\slash' >/dev/null 2>&1
+out="$(CLAUDISH_KEEP_TERMS='7' CTL keep list)"
+printf '%s\n' "$out" | grep -Fq 'back\slash'
+check $? "keep list still shows a backslash term"
+
+awk 'BEGIN{for (i = 1; i <= 205; i++) printf "term%03d\n", i}' > "$KEEPF"
+out="$(CTL keep oneMoreTerm 2>&1)"
+printf '%s\n' "$out" | grep -q 'not added: oneMoreTerm'
+check $? "adding past the 200 cap names the term that was dropped"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]
