@@ -18,9 +18,15 @@
 #
 # A run is a HIJACK when the output opens with a first-person reply to the
 # message (refusal, "I cannot see the attachment", "only you can decide"),
-# or when it drops every anchor the fixture must keep (repo names, commit
+# or when it drops an anchor the fixture must keep (repo names, commit
 # ids, code). Anchors are the lines of fixtures/<name>.keep, one per line;
 # without that file the fixture only checks the refusal patterns.
+#
+# CLAUDISH_KEEP_TERMS is honoured here too (the keep file is isolated into the
+# sandbox, never this machine's real one). Fixture 05-plastic-terms measures
+# protected-term survival: run it once with CLAUDISH_KEEP_TERMS set to the
+# fixture's own anchors and once with it unset, and compare the dropped-anchor
+# counts on that one fixture.
 # Exit 0 when hijacks <= CLAUDISH_EVAL_MAX_HIJACKS (default 0). bash 3.2 safe.
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -34,7 +40,8 @@ trap 'rm -rf "$SANDBOX"' EXIT
 export TMPDIR="$SANDBOX/tmp"; mkdir -p "$TMPDIR" "$SANDBOX/state"
 export CLAUDISH_OFF_FILE="$SANDBOX/state/off" CLAUDISH_MODE_FILE="$SANDBOX/state/mode" \
        CLAUDISH_STYLE_FILE="$SANDBOX/state/style" CLAUDISH_MODEL_FILE="$SANDBOX/state/model" \
-       CLAUDISH_LANG_FILE="$SANDBOX/state/language" CLAUDISH_LOCAL_DIR="$SANDBOX/state"
+       CLAUDISH_LANG_FILE="$SANDBOX/state/language" CLAUDISH_LOCAL_DIR="$SANDBOX/state" \
+       CLAUDISH_KEEP_TERMS_FILE="$SANDBOX/state/keep-terms"
 export CLAUDISH_MODE=replace CLAUDISH_MIN_CHARS=1 CLAUDISH_NOTICE=0 CLAUDISH_DEBUG=1
 # Auth selection for the anthropic provider. apikey needs CLAUDISH_ANTHROPIC_KEY
 # or ANTHROPIC_API_KEY in the environment; oauth needs a providers.sh that
@@ -60,6 +67,7 @@ command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
 PLUG="$SANDBOX/plugin"; mkdir -p "$PLUG"
 cp "$ROOT/rewrite.sh" "$PLUG/rewrite.sh"; [ -f "$ROOT/lang.sh" ] && cp "$ROOT/lang.sh" "$PLUG/lang.sh"
 cp "$ROOT/providers.sh" "$PLUG/providers.sh"
+cp "$ROOT/keep-terms.sh" "$PLUG/keep-terms.sh"
 DEBUG_LOG="$TMPDIR/claudish-to-english/debug.log"
 printf 'provider %s (auth %s), model %s, %s run(s) per fixture\n\n' \
   "${CLAUDISH_PROVIDER:-ollama}" "$AUTH" "${CLAUDISH_MODEL:-default}" "$RUNS"
@@ -67,7 +75,7 @@ printf 'provider %s (auth %s), model %s, %s run(s) per fixture\n\n' \
 # The reply shapes a hijacked run opens with. Case-insensitive, start of text.
 REFUSAL='^(i can.?t|i cannot|i don.?t have (access|the)|i do not have|i.m not able|i am not able|i.m unable|i am unable|only you can|i need you to (share|paste|provide)|as an ai|i.m sorry|i am sorry|sorry, )'
 
-is_hijack() {  # $1 = rewrite text, $2 = keep-file or empty; prints reason or nothing
+is_hijack() {  # $1 = rewrite text, $2 = keep-file or empty, $3 = reject-file or empty; prints reason or nothing
   _head="$(printf '%s' "$1" | tr -d '\r' | sed -n '1,3p' | tr '\n' ' ' | tr 'A-Z' 'a-z' | sed 's/^[[:space:]#*>_-]*//')"
   if printf '%s' "$_head" | /usr/bin/grep -q -i -E "$REFUSAL"; then printf 'opens with a reply: %s' "$(printf '%s' "$_head" | cut -c1-70)"; return; fi
   if [ -n "$2" ] && [ -f "$2" ]; then
@@ -76,7 +84,17 @@ is_hijack() {  # $1 = rewrite text, $2 = keep-file or empty; prints reason or no
       [ -n "$_a" ] || continue
       case "$1" in *"$_a"*) ;; *) _lost="$_lost${_lost:+, }$_a" ;; esac
     done < "$2"
-    [ -n "$_lost" ] && printf 'dropped anchors: %s' "$_lost"
+    [ -n "$_lost" ] && { printf 'dropped anchors: %s' "$_lost"; return; }
+  fi
+  # Negative anchors: plainer synonyms the drift is known to reach for. A
+  # missing .reject file is a no-op, so fixtures 01-04 are unaffected.
+  if [ -n "${3:-}" ] && [ -f "$3" ]; then
+    _found=""
+    while IFS= read -r _r; do
+      [ -n "$_r" ] || continue
+      case "$1" in *"$_r"*) _found="$_found${_found:+, }$_r" ;; esac
+    done < "$3"
+    [ -n "$_found" ] && printf 'found reject word(s): %s' "$_found"
   fi
 }
 
@@ -84,6 +102,7 @@ total=0; hijacks=0; failed=0
 printf '%-26s %-4s %-7s %s\n' fixture run verdict note
 for fx in "$ROOT"/evals/fixtures/*.txt; do
   name="$(basename "$fx" .txt)"; keep="$ROOT/evals/fixtures/$name.keep"; [ -f "$keep" ] || keep=""
+  reject="$ROOT/evals/fixtures/$name.reject"; [ -f "$reject" ] || reject=""
   msg="$(cat "$fx")"
   i=1
   while [ "$i" -le "$RUNS" ]; do
@@ -99,7 +118,7 @@ printf '%-26s %-4s %-7s %s\n' "$name" "$i" "FAIL" "no rewrite: ${why:-provider e
     else
       # replace mode prefixes the separator label; judge the text after it
       body="$(printf '%s' "$rw" | awk 'f{print} /^💬 /{f=1}')"; [ -n "$body" ] || body="$rw"
-      why="$(is_hijack "$body" "$keep")"
+      why="$(is_hijack "$body" "$keep" "$reject")"
       if [ -n "$why" ]; then hijacks=$((hijacks + 1)); printf '%-26s %-4s %-7s %s\n' "$name" "$i" "HIJACK" "$why"
       else printf '%-26s %-4s %-7s %s\n' "$name" "$i" "ok" "$(printf '%s' "$body" | tr '\n' ' ' | cut -c1-60)..."; fi
     fi

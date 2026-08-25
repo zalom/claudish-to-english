@@ -1,0 +1,15 @@
+Plastic is walking through delivery for intent 43, the next free ID in line, right after intent
+42, which closed first. Once intent 43 wraps up, intent 44 comes after it and picks up the
+remaining work, so the order runs 42, then 43, then 44.
+
+The enforcer went through the plan and the checklist and signed off without changes. A savepoint
+was written right after that, to mark the point where the plan stage closed. Right now the
+branch lives in its own worktree, checked out clean and ready to go. Before Exec starts, a few
+things are still left to do: confirm the worktree sits on the right branch, make sure the
+delivery lock is held for the whole run, and check that QMD has already indexed the discovery
+notes for the next intent in line.
+
+The branch check came first, the delivery lock came next, and after that the QMD check was the
+last one on the list. All three are done now, so Exec can begin. Once Exec finishes, INDEX gets
+updated to move intent 43 out of Active, and Folgezettel keeps the link back to where the idea
+started, so the chain from intent 42 through intent 43 and on to intent 44 stays easy to follow.
