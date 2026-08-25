@@ -12,9 +12,10 @@
 # Copy this file, uncomment what applies to you, add your own, then run:
 #   /claudish keep import <your-file>
 #
-# The examples below are commented out, so importing this file unchanged adds
-# nothing. Keep the list to names: protecting an ordinary word like "plan" or
-# "stage" makes every rewrite clumsy.
+# The examples below are commented out, so importing this file unchanged finds
+# no terms and reports an error rather than silently adding anything. Keep
+# the list to names: protecting an ordinary word like "plan" or "stage"
+# makes every rewrite clumsy.
 #
 # Kubernetes
 # api.example.com

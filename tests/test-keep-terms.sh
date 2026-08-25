@@ -329,8 +329,16 @@ printf '%s\n' "$out" | grep -Fq 'enforcer'; check $? "drift names a dropped prot
 printf '%s\n' "$out" | grep -Fq 'spec.md'; check $? "drift names a dropped protected-looking word (spec.md)"
 printf '%s\n' "$out" | grep -Fq 'savepoint'; [ $? -ne 0 ]; check $? "drift does not name a term that survived and is already protected"
 printf '%s\n' "$out" | grep -Fq 'closed'; [ $? -ne 0 ]; check $? "drift does not name an ordinary word from the text"
-printf '%s\n' "$out" | grep -q '^  /claudish keep '; [ $? -ne 0 ]; check $? "drift never prints a paste-ready /claudish keep command"
-printf '%s\n' "$out" | grep -Fq '/claudish keep <term>'; check $? "drift points at the generic /claudish keep <term> instruction instead"
+# The generic instruction line ends in the literal placeholder
+# "/claudish keep <term>.", which is fine; what must never appear is that
+# same prefix followed by one of the ACTUAL dropped words, the old
+# paste-ready form.
+printf '%s\n' "$out" | grep -Fq '/claudish keep enforcer'; [ $? -ne 0 ]
+check $? "drift never prints enforcer straight after /claudish keep"
+printf '%s\n' "$out" | grep -Fq '/claudish keep spec.md'; [ $? -ne 0 ]
+check $? "drift never prints spec.md straight after /claudish keep"
+printf '%s\n' "$out" | grep -Fq '/claudish keep <term>.'
+check $? "drift points at the generic /claudish keep <term> placeholder instead"
 
 # 24. drift with nothing stored exits non-zero with an explanation
 rm -f "$LO" "$LR"
@@ -365,16 +373,25 @@ fmode="$(stat -f '%Lp' "$LR" 2>/dev/null || stat -c '%a' "$LR" 2>/dev/null)"
 [ "$fmode" = "600" ]; check $? "last-rewrite is written at mode 600"
 mkdir -p "$CLAUDISH_LOCAL_DIR"
 
-# 27. S6: a different (or missing) session id cannot see another session's
-# stored message
-rm -f "$LO" "$LR"
+# 27. S6: concurrent sessions get their own file pair, never overwriting each
+# other's; a wrong or missing session id degrades to the newest available
+# pair rather than a dead end, per the nit that the write side (the hook
+# payload's session_id) and the read side (CLAUDE_CODE_SESSION_ID) could one
+# day disagree even for the SAME session. Only truly nothing stored fails.
+rm -f "$LO" "$LR" "$CLAUDISH_LOCAL_DIR"/last-original.* "$CLAUDISH_LOCAL_DIR"/last-rewrite.*
 run_hook m27 ""
-CLAUDE_CODE_SESSION_ID=other-session CTL drift >/dev/null 2>&1
+[ -f "$LO" ] && [ -f "$LR" ]; check $? "session test's own pair exists after run_hook"
+printf '%s' 'a different session entirely' > "$CLAUDISH_LOCAL_DIR/last-original.other-session"
+printf '%s' 'a different session entirely' > "$CLAUDISH_LOCAL_DIR/last-rewrite.other-session"
+[ -f "$LO" ]; check $? "writing a second session's pair does not overwrite the first session's"
+CLAUDE_CODE_SESSION_ID=nonexistent-session CTL drift >/dev/null 2>&1
 ec=$?
-[ "$ec" -ne 0 ]; check $? "a different session id cannot see this session's stored message"
-( unset CLAUDE_CODE_SESSION_ID; CTL drift >/dev/null 2>&1 )
+[ "$ec" -eq 0 ]; check $? "a session id matching no file falls back to the newest stored pair rather than failing"
+rm -f "$CLAUDISH_LOCAL_DIR/last-original.other-session" "$CLAUDISH_LOCAL_DIR/last-rewrite.other-session"
+rm -f "$LO" "$LR"
+CTL drift >/dev/null 2>&1
 ec=$?
-[ "$ec" -ne 0 ]; check $? "no session id falls back to the flat name, which was never written here"
+[ "$ec" -ne 0 ]; check $? "drift with truly nothing stored anywhere still fails cleanly"
 
 # 28. S2: drift never offers a fragment of an already protected multi-word
 # term as if it were its own word
@@ -463,6 +480,78 @@ CTL keep beta >/dev/null 2>&1
 CTL keep gamma >/dev/null 2>&1
 [ "$(cat "$KEEPF")" = "alpha"$'\n'"beta"$'\n'"gamma" ]
 check $? "three successive adds produce no blank lines between entries"
+
+
+# 36. Blocker 2: pure ordinary English prints no candidates
+printf '%s' 'I ran the tests and they all passed. The code is now correct and the build is green.' > "$LO"
+printf '%s' 'Ran tests. All good.' > "$LR"
+out="$(CTL drift 2>&1)"
+printf '%s\n' "$out" | grep -Fq 'no candidates'
+check $? "an ordinary-English pair prints no candidates, not a handful of common words"
+
+# 37. Blocker 2: a Tier 2 word never appears as a drift candidate, even when
+# genuinely dropped and not otherwise protected
+rm -f "$KEEPF"
+printf '%s' 'The spec, the plan and the checklist are in the store, and INDEX shows it Active.' > "$LO"
+printf '%s' 'The files are in the system, and the list shows it open.' > "$LR"
+out="$(CTL drift 2>&1)"
+for w in spec plan checklist store INDEX Active; do
+  printf '%s\n' "$out" | grep -Fwq "$w"; [ $? -ne 0 ]
+  check $? "drift never offers the Tier 2 word '$w' as a candidate"
+done
+
+# 38. S3: an awk/grep that comes back non-numeric for the line count fails
+# loudly rather than letting the empty-result guard silently pass
+rm -f "$KEEPF"
+printf '%s\n' 'onlyterm' > "$KEEPF"
+FAKEBIN="$SANDBOX/fakebin"; mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/grep" <<'FAKEGREP'
+#!/bin/sh
+for a in "$@"; do
+  [ "$a" = '[^[:space:]]' ] && exit 0
+done
+exec /usr/bin/grep "$@"
+FAKEGREP
+chmod +x "$FAKEBIN/grep"
+out="$(PATH="$FAKEBIN:$PATH" CLAUDISH_KEEP_TERMS_FILE="$KEEPF" bash "$PLUG/claudish-ctl.sh" keep remove onlyterm 2>&1)"
+ec=$?
+[ "$ec" -ne 0 ]; check $? "a non-numeric line count fails loudly instead of silently passing the guard"
+[ -f "$KEEPF" ]; check $? "the keep file survives when the line count could not be trusted"
+
+# 39. S4: a trailing blank line does not make a legitimate full clear look
+# like an unexpectedly empty result (this was a regression the S3/B1 guard
+# itself introduced)
+rm -f "$KEEPF"
+printf 'onlyterm\n\n' > "$KEEPF"
+CTL keep remove onlyterm >/dev/null 2>&1
+ec=$?
+[ "$ec" -eq 0 ]; check $? "removing the sole term from a file with a trailing blank line still succeeds"
+[ ! -f "$KEEPF" ]; check $? "the file is legitimately cleared, not refused as an unexpected empty result"
+
+# 40. S5: a stale session-suffixed pair from days ago is pruned on the next
+# write, while a fresh sibling from a different session survives
+rm -f "$LO" "$LR"
+printf 'stale' > "$CLAUDISH_LOCAL_DIR/last-original.stale-old"
+printf 'stale' > "$CLAUDISH_LOCAL_DIR/last-rewrite.stale-old"
+touch -t 202001010000 "$CLAUDISH_LOCAL_DIR/last-original.stale-old" "$CLAUDISH_LOCAL_DIR/last-rewrite.stale-old"
+printf 'fresh' > "$CLAUDISH_LOCAL_DIR/last-original.fresh-sibling"
+printf 'fresh' > "$CLAUDISH_LOCAL_DIR/last-rewrite.fresh-sibling"
+run_hook m40 ""
+[ ! -f "$CLAUDISH_LOCAL_DIR/last-original.stale-old" ] && [ ! -f "$CLAUDISH_LOCAL_DIR/last-rewrite.stale-old" ]
+check $? "a session pair untouched for a week is pruned on the next write"
+[ -f "$CLAUDISH_LOCAL_DIR/last-original.fresh-sibling" ] && [ -f "$CLAUDISH_LOCAL_DIR/last-rewrite.fresh-sibling" ]
+check $? "a recent sibling from a different session is not pruned"
+rm -f "$CLAUDISH_LOCAL_DIR/last-original.fresh-sibling" "$CLAUDISH_LOCAL_DIR/last-rewrite.fresh-sibling"
+
+# 41. the legacy flat pair from an older install gets locked to 600 even on
+# a message where it is not the file being written this time
+rm -f "$LO" "$LR"
+printf 'legacy' > "$CLAUDISH_LOCAL_DIR/last-original"
+chmod 644 "$CLAUDISH_LOCAL_DIR/last-original" 2>/dev/null
+run_hook m41 ""
+lmode="$(stat -f '%Lp' "$CLAUDISH_LOCAL_DIR/last-original" 2>/dev/null || stat -c '%a' "$CLAUDISH_LOCAL_DIR/last-original" 2>/dev/null)"
+[ "$lmode" = "600" ]; check $? "a legacy flat last-original file is chmoded to 600 even when unused this message"
+rm -f "$CLAUDISH_LOCAL_DIR/last-original"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]

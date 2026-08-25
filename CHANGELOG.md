@@ -21,16 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you import it unchanged; and `/claudish keep import <file>` merges a
   file of terms in, comments and all, without rewriting what is already
   there. `/claudish drift` compares the last original message against its
-  last rewrite and prints, as a plain list, the protected-looking words
-  that got dropped after a small filter (no pure numbers, nothing under 4
-  characters, no fragment of an already protected multi-word term, no
-  common word, no hyphenated word without an uppercase letter or a dot); it
-  never prints a ready-to-run command and never adds anything on its own.
-  This is enabled by `CLAUDISH_DRIFT`, on by default and turned off by
-  any value other than the literal `1`, which stores the last original and the last
-  rewrite under `CLAUDISH_LOCAL_DIR`, session-suffixed, in a directory the
-  plugin creates at mode `700` with both files at `600`, cleared by
-  `/claudish reset`.
+  last rewrite and prints, as a plain list with no ready-to-run command
+  attached, the protected-looking words that got dropped after a filter
+  (no pure numbers, nothing under 4 characters, no fragment of an already
+  protected multi-word term, no hyphenated word without an uppercase
+  letter or a dot, and several hundred common English words including the
+  specific ordinary-English names this project's own curation already
+  rejected); it never adds anything on its own, and its own output says
+  plainly that this is a hint, not a verdict. This is enabled by
+  `CLAUDISH_DRIFT`, on by default and turned off by any value other than
+  the literal `1`, which stores the last original and the last rewrite
+  under `CLAUDISH_LOCAL_DIR`, one pair per session id, in a directory the
+  plugin creates at mode `700` with every file in it at `600`; a pair no
+  session has touched in 7 days is pruned automatically, and
+  `/claudish reset` clears every pair immediately.
 
 ## [0.7.0] - 2026-08-25
 

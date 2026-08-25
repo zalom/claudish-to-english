@@ -371,7 +371,12 @@ keep_remove() {  # $1 = one term, matched as a whole line, commas included
   # refuse up front rather than let one match and delete a real comment.
   case "$term" in '#'*) fail "\"$term\" is not in the keep list (see /claudish keep list)" ;; esac
   [ -f "$KEEP_FILE" ] || fail "\"$term\" is not in the keep list (see /claudish keep list)"
-  total="$(awk 'END{print NR}' "$KEEP_FILE")"
+  # Non-blank lines only: a trailing blank line (the README explicitly
+  # invites hand-editing the file) must not count as "real content still
+  # there" and false-trigger the empty-result guard below on a legitimate
+  # full clear.
+  total="$(grep -c '[^[:space:]]' "$KEEP_FILE")"
+  case "$total" in ''|*[!0-9]*) fail "cannot rewrite $KEEP_FILE" ;; esac
   # Match against the read path's own normalization (control characters
   # stripped, edges trimmed, cut to 64), not just a whitespace trim, so a
   # term the sanitizer reshaped (an interior tab, an over-length line)
@@ -385,7 +390,7 @@ keep_remove() {  # $1 = one term, matched as a whole line, commas included
   # populates an array; KEEP_FILE second, prints anything not in it), which
   # has no command-count ceiling the way "1d;2d;3d;...;841d" does under BSD
   # sed (BSD sed refuses more than 840 -e commands, and past that point the
-  # unbounded expression above used to fail silently and hand keep_write an
+  # previous implementation used to fail silently and hand keep_write an
   # empty string, which took the "clear the whole file" branch).
   _numf="$(mktemp "${TMPDIR:-/tmp}/claudish-lines.XXXXXX" 2>/dev/null)" || fail "cannot create a temp file"
   printf '%s\n' "$lines" > "$_numf"
@@ -503,6 +508,20 @@ case "$cmd" in
       *)             LO="$LD/last-original.$SID"; LR="$LD/last-rewrite.$SID" ;;
     esac
     if [ ! -f "$LO" ] || [ ! -f "$LR" ]; then
+      # A future disagreement between the write side (rewrite.sh keys off
+      # the hook payload's own .session_id) and the read side (this keys off
+      # CLAUDE_CODE_SESSION_ID) would otherwise dead-end here with a
+      # misleading "let one message go through" while the data sits on disk
+      # under a different suffix. Fall back to the newest last-original.*
+      # that has a matching last-rewrite.* sibling before giving up.
+      _newest="$(ls -t "$LD"/last-original.* 2>/dev/null | head -n1)"
+      if [ -n "$_newest" ]; then
+        _suffix="$(basename "$_newest")"; _suffix="${_suffix#last-original.}"
+        _cand_lr="$LD/last-rewrite.$_suffix"
+        [ -f "$_cand_lr" ] && { LO="$_newest"; LR="$_cand_lr"; }
+      fi
+    fi
+    if [ ! -f "$LO" ] || [ ! -f "$LR" ]; then
       printf 'claudish-ctl: no stored rewrite yet. Let one assistant message go through with the rewrite on, then run /claudish drift (CLAUDISH_DRIFT=0 turns the storing off).\n' >&2
       exit 1
     fi
@@ -529,6 +548,652 @@ case "$cmd" in
     # lock") is skipped rather than offered as if it were its own word.
     protwords="${KEEP_NL}$(claudish_keep_terms 2>/dev/null | tr -c 'A-Za-z0-9._-' '\n' | grep -v '^$')${KEEP_NL}"
     hits=""; nhits=0
+    # Common English words drift never proposes. Data, not filter logic, so
+    # there is no size limit to respect here: a short stop list cannot carry
+    # the load of separating "checklist" (worth protecting) from "green" (not),
+    # so this is deliberately large, not a hand-picked handful.
+    _drift_common="$(cat <<'DRIFT_STOP_EOF'
+a
+about
+above
+across
+actually
+advise
+advised
+advises
+affected
+after
+again
+against
+ago
+ahead
+all
+almost
+alone
+along
+already
+also
+although
+always
+am
+among
+an
+and
+another
+any
+anyone
+anything
+anywhere
+are
+area
+around
+as
+ask
+asked
+asking
+at
+away
+back
+bad
+barely
+basically
+be
+became
+because
+become
+becomes
+been
+before
+began
+begin
+beginning
+behind
+being
+believe
+below
+best
+better
+between
+beyond
+big
+bit
+body
+both
+bring
+brought
+build
+building
+built
+but
+buy
+by
+call
+called
+calling
+came
+can
+cannot
+car
+case
+cases
+cause
+certain
+certainly
+change
+changed
+child
+children
+city
+clearly
+close
+code
+come
+comes
+coming
+commit
+commits
+committed
+committing
+common
+company
+complete
+completely
+consider
+considered
+constantly
+continue
+continued
+continuously
+contract
+contracts
+correct
+correctly
+could
+couldn
+course
+create
+created
+current
+currently
+day
+days
+decide
+decided
+deposit
+deposits
+detail
+details
+did
+didn
+different
+directly
+discover
+discovered
+discovers
+discovery
+do
+document
+documented
+documents
+does
+doing
+done
+door
+down
+downstream
+during
+each
+early
+easily
+easy
+either
+else
+end
+ended
+enough
+entire
+entirely
+especially
+even
+evening
+eventually
+ever
+every
+everyone
+everything
+exactly
+except
+experience
+explain
+explained
+explains
+fact
+far
+few
+final
+finally
+find
+finding
+fine
+first
+five
+follow
+followed
+following
+for
+form
+found
+four
+frequently
+friend
+from
+full
+fully
+further
+gave
+general
+generally
+get
+gets
+getting
+girl
+give
+given
+gives
+giving
+go
+goes
+going
+gone
+good
+got
+great
+green
+group
+grow
+had
+half
+hand
+happen
+happened
+happens
+hard
+hardly
+has
+have
+having
+he
+head
+hear
+heard
+help
+her
+here
+herself
+high
+him
+himself
+his
+hold
+home
+hour
+house
+how
+however
+hundred
+idea
+if
+immediately
+implement
+implementation
+implementations
+implemented
+implements
+important
+in
+include
+included
+including
+incorrect
+indeed
+information
+initially
+inside
+instantly
+instead
+internal
+into
+is
+it
+its
+itself
+just
+keep
+kept
+kind
+knew
+know
+known
+large
+last
+late
+later
+least
+leave
+left
+less
+let
+level
+life
+light
+like
+likely
+line
+list
+listed
+lists
+little
+live
+long
+look
+looked
+looking
+looks
+lot
+love
+low
+made
+main
+make
+makes
+making
+man
+many
+may
+maybe
+me
+mean
+means
+meant
+meet
+men
+might
+mind
+minute
+miss
+moment
+money
+month
+more
+morning
+most
+mostly
+mother
+move
+moved
+much
+must
+my
+myself
+name
+near
+nearly
+need
+needed
+never
+new
+next
+nice
+night
+no
+none
+nor
+not
+nothing
+now
+number
+occasionally
+of
+off
+often
+ok
+old
+on
+once
+one
+only
+onto
+open
+opened
+opening
+or
+order
+originally
+other
+others
+our
+out
+outside
+over
+own
+part
+particularly
+parts
+pass
+passed
+passing
+past
+people
+perhaps
+person
+place
+point
+possible
+previously
+probably
+problem
+program
+promise
+promises
+properly
+provide
+provided
+public
+put
+quickly
+quite
+ran
+rarely
+rather
+reach
+read
+ready
+real
+really
+reason
+recently
+regarding
+regularly
+remember
+repeatedly
+report
+result
+return
+right
+room
+run
+said
+same
+saw
+say
+saying
+says
+second
+see
+seem
+seemed
+seems
+seen
+sent
+set
+several
+shall
+she
+should
+show
+showed
+shown
+side
+similarly
+simplified
+simplify
+simply
+since
+single
+sit
+site
+situation
+six
+slowly
+small
+so
+some
+someone
+something
+sometimes
+soon
+sort
+sound
+space
+speak
+speaking
+specific
+stable
+start
+started
+starting
+state
+stay
+still
+stop
+story
+successfully
+such
+suddenly
+sure
+system
+take
+taken
+takes
+taking
+talk
+tell
+term
+terms
+than
+that
+the
+their
+theirs
+them
+themselves
+then
+there
+these
+they
+thing
+things
+think
+third
+this
+those
+though
+thought
+three
+through
+throughout
+time
+times
+to
+today
+together
+told
+too
+took
+top
+total
+toward
+towards
+tried
+tries
+true
+truly
+try
+trying
+turn
+turned
+two
+under
+understand
+until
+up
+upon
+upstream
+us
+use
+used
+using
+usually
+very
+want
+wanted
+wants
+was
+watch
+watched
+way
+ways
+we
+well
+went
+were
+what
+whatever
+when
+where
+whether
+which
+while
+who
+whole
+whose
+why
+will
+with
+within
+without
+word
+work
+worked
+working
+world
+would
+wouldn
+write
+written
+wrong
+yes
+yet
+you
+your
+yours
+yourself
+DRIFT_STOP_EOF
+)"
+    # Tier 2: names the intent-44 curation decided in writing degrade the
+    # rewrite if protected, because they read as ordinary English or as a
+    # generic status word rather than a name (spec, plan, checklist, outcome,
+    # roadmap, batch, store, gate, advisor, stage, lock, chain, active,
+    # future, completed, INDEX). Listed here explicitly, both cases where a
+    # sentence-initial capital is plausible, so drift never recommends
+    # protecting a word its own documentation tells the owner not to.
+    _drift_tier2="$(cat <<'DRIFT_TIER2_EOF'
+spec
+Spec
+plan
+Plan
+checklist
+Checklist
+outcome
+Outcome
+roadmap
+Roadmap
+batch
+Batch
+store
+Store
+gate
+Gate
+advisor
+Advisor
+stage
+Stage
+lock
+Lock
+chain
+Chain
+active
+Active
+future
+Future
+completed
+Completed
+INDEX
+Index
+index
+DRIFT_TIER2_EOF
+)"
+    common="${KEEP_NL}${_drift_common}${KEEP_NL}${_drift_tier2}${KEEP_NL}"
     while IFS= read -r tok; do
       [ -n "$tok" ] || continue
       [ "$nhits" -ge 20 ] && break
@@ -542,11 +1207,10 @@ case "$cmd" in
       case "$tok" in
         *-*) case "$tok" in ?*[A-Z]*|*.*) ;; *) continue ;; esac ;;
       esac
-      # A short list of common words the filter above cannot catch on its
-      # own; deliberately small, a floor not a proof.
-      case "$tok" in
-        because|therefore|something|everything|different|available|important|following|remaining|assistant|original|question|sentence|probably|actually|anything|possible|together|already|message|documents|upstream) continue ;;
-      esac
+      # In the common-word / Tier 2 list above? A case-sensitive whole-word
+      # test, so this still misses a stop word spelled with capitals the
+      # list does not carry; that is a known gap, not a claim otherwise.
+      case "$common" in *"${KEEP_NL}${tok}${KEEP_NL}"*) continue ;; esac
       # Already protected, whole term or a word inside a multi-word one?
       case "$prot" in *"${KEEP_NL}${tok}${KEEP_NL}"*) continue ;; esac
       case "$protwords" in *"${KEEP_NL}${tok}${KEEP_NL}"*) continue ;; esac
@@ -568,8 +1232,9 @@ DRIFT_EOF
     # real vocabulary, not a multi-term line he runs without reading it.
     printf '\n  claudish drift: in the last original, not in the last rewrite\n\n'
     printf '  %s\n\n' "$hits"
-    printf '  These are candidates to check, not a verdict: a rewrite may drop a word for good\n'
-    printf '  reason. Add the ones that are real vocabulary with /claudish keep <term>.\n\n'
+    printf '  This is a hint, not a verdict: expect some ordinary words in the list\n'
+    printf '  alongside real ones. Add only the ones that are real names, with\n'
+    printf '  /claudish keep <term>.\n\n'
     exit 0
     ;;
 esac
