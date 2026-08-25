@@ -617,6 +617,23 @@ claudish-to-english/
 └── README.md
 ```
 
+## Tests and evals
+
+- `tests/test-rewrite-prompt.sh` runs the real `rewrite.sh` with a stub
+  `providers.sh` and checks the prompt it builds: the message is framed as
+  text to rewrite, the user turn is the untouched message behind a
+  "Rewrite this assistant message:" line, and the framing survives the
+  style presets, a custom prompt file, and the context line. No network, no
+  keys; safe for CI.
+- `evals/rewrite-prompt-eval.sh` replays the fixtures in `evals/fixtures/`
+  through the real hook and the real model, several runs each, and counts
+  how often the model answered the message instead of rewriting it. It
+  spends model calls, so run it by hand when the prompt or the model
+  changes. `CLAUDISH_EVAL_AUTH` picks the path: `claude` (default, headless
+  `claude -p`), `oauth`, `apikey` (skips without a key), or `env`.
+  `CLAUDISH_EVAL_PROVIDERS` points it at another `providers.sh` when the
+  path you want lives on a different branch.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
