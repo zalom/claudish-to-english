@@ -1,0 +1,3 @@
+That is only the Exec agent going idle after its gate report, already reviewed. Intent 40 still waits on your decision.
+
+needs input: approve the attached PR diff and PR body for intent 40 as-is ("approve"), or name the changes you want before I push to zalom/claudish-to-english and open the PR against gvzdv/claudish-to-english.

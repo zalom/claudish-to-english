@@ -660,17 +660,31 @@ claudish-to-english/
 └── README.md
 ```
 
-## Tests
+## Tests and evals
 
-`tests/test-anthropic-auth.sh` covers both auth paths of the anthropic
-provider without any network or real credential: `curl` and `security` are
-stubs on `PATH`. It checks that an API key travels as `x-api-key` in the
-private `-K` file and never on the command line, and that oauth mode reads
-the Keychain token, sends it as `Authorization: Bearer` with the beta flag,
-honors `expiresAt`, falls back to `~/.claude/.credentials.json`, respects
-the `CLAUDISH_OAUTH_MAX_UTIL` marker, writes the 11-column ledger with no
-message content, and keeps the refresh token out of every file and the
-access token out of the environment. Run it with `tests/test-anthropic-auth.sh`.
+Tests are hermetic: no network, no keys, no user settings, safe for CI.
+Evals spend real model calls and are run by hand.
+
+- `tests/test-rewrite-prompt.sh` runs the real `rewrite.sh` with a stub
+  `providers.sh` and checks the prompt it builds: the message is framed as
+  text to rewrite, the user turn is the untouched message behind a
+  "Rewrite this assistant message:" line, and the framing survives the
+  style presets, a custom prompt file, and the context line.
+- `tests/test-anthropic-auth.sh` covers both auth paths of the anthropic
+  provider with `curl` and `security` stubbed on `PATH`: an API key travels
+  as `x-api-key` in the private `-K` file and never on the command line;
+  oauth mode reads the Keychain token, sends it as `Authorization: Bearer`
+  with the beta flag, honors `expiresAt`, falls back to
+  `~/.claude/.credentials.json`, respects the `CLAUDISH_OAUTH_MAX_UTIL`
+  marker, writes the 11-column ledger with no message content, and keeps the
+  refresh token out of every file and the access token out of the
+  environment.
+- `evals/rewrite-prompt-eval.sh` replays the fixtures in `evals/fixtures/`
+  through the real hook and the real model, several runs each, and counts
+  how often the model answered the message instead of rewriting it.
+  `CLAUDISH_EVAL_AUTH` picks the path: `claude` (default, headless
+  `claude -p`), `oauth`, `apikey` (skips without a key), or `env`;
+  `CLAUDISH_EVAL_RUNS` sets the runs per fixture.
 
 ## License
 

@@ -1,0 +1,10 @@
+The retry loop now backs off exponentially. Here is the exact change in lib/fetch.rb:
+
+```ruby
+retries.times do |n|
+  sleep(2 ** n)
+  break if fetch(url)
+end
+```
+
+It caps at 5 attempts, so the longest wait is 31 seconds in total. Tell me if you would rather cap the total wait at 10 seconds instead, and I will change the exponent base to 1.5.
