@@ -489,13 +489,15 @@ out="$(CTL drift 2>&1)"
 printf '%s\n' "$out" | grep -Fq 'no candidates'
 check $? "an ordinary-English pair prints no candidates, not a handful of common words"
 
-# 37. Blocker 2: a Tier 2 word never appears as a drift candidate, even when
-# genuinely dropped and not otherwise protected
+# 37. Blocker 2: every one of the 16 Tier 2 words never appears as a drift
+# candidate, even when genuinely dropped and not otherwise protected (all
+# 16, not a sample of 6, and each checked in its own message so one word's
+# absence from the source text cannot mask another's failure to filter)
 rm -f "$KEEPF"
-printf '%s' 'The spec, the plan and the checklist are in the store, and INDEX shows it Active.' > "$LO"
-printf '%s' 'The files are in the system, and the list shows it open.' > "$LR"
-out="$(CTL drift 2>&1)"
-for w in spec plan checklist store INDEX Active; do
+for w in spec plan checklist outcome roadmap batch store gate advisor stage lock chain active future completed INDEX; do
+  printf '%s' "The ${w} note explains the idea in full detail today." > "$LO"
+  printf '%s' "The summary explains the idea in full detail today." > "$LR"
+  out="$(CTL drift 2>&1)"
   printf '%s\n' "$out" | grep -Fwq "$w"; [ $? -ne 0 ]
   check $? "drift never offers the Tier 2 word '$w' as a candidate"
 done
@@ -552,6 +554,104 @@ run_hook m41 ""
 lmode="$(stat -f '%Lp' "$CLAUDISH_LOCAL_DIR/last-original" 2>/dev/null || stat -c '%a' "$CLAUDISH_LOCAL_DIR/last-original" 2>/dev/null)"
 [ "$lmode" = "600" ]; check $? "a legacy flat last-original file is chmoded to 600 even when unused this message"
 rm -f "$CLAUDISH_LOCAL_DIR/last-original"
+
+
+# 42. BLOCKER (privacy): an empty, absent, or null session_id all land on
+# the FLAT (unsuffixed) pair, not just a literal "nosession"; jq's // only
+# guards against null, not an empty string.
+rm -f "$CLAUDISH_LOCAL_DIR/last-original" "$CLAUDISH_LOCAL_DIR/last-rewrite"
+jq -n --arg mid m42a --arg d "$MSG" '{message_id:$mid, session_id:"", index:0, final:true, delta:$d}' \
+  | bash "$PLUG/rewrite.sh" >/dev/null
+[ -f "$CLAUDISH_LOCAL_DIR/last-original" ]; check $? "an empty session_id writes the flat (unsuffixed) pair"
+rm -f "$CLAUDISH_LOCAL_DIR/last-original" "$CLAUDISH_LOCAL_DIR/last-rewrite"
+jq -n --arg mid m42b --arg d "$MSG" '{message_id:$mid, index:0, final:true, delta:$d}' \
+  | bash "$PLUG/rewrite.sh" >/dev/null
+[ -f "$CLAUDISH_LOCAL_DIR/last-original" ]; check $? "an absent session_id writes the flat (unsuffixed) pair"
+rm -f "$CLAUDISH_LOCAL_DIR/last-original" "$CLAUDISH_LOCAL_DIR/last-rewrite"
+jq -n --arg mid m42c --arg d "$MSG" '{message_id:$mid, session_id:null, index:0, final:true, delta:$d}' \
+  | bash "$PLUG/rewrite.sh" >/dev/null
+[ -f "$CLAUDISH_LOCAL_DIR/last-original" ]; check $? "a null session_id writes the flat (unsuffixed) pair"
+
+# 43. BLOCKER (privacy): a stale FLAT pair is pruned, not just stale
+# suffixed ones. The sweep used to require a dot in its glob
+# (last-original.*), which never matches the unsuffixed name, so a flat
+# pair holding raw message text could sit there forever against the
+# documented 7-day promise. 400 days old, several messages sent, must be
+# gone.
+rm -f "$CLAUDISH_LOCAL_DIR/last-original" "$CLAUDISH_LOCAL_DIR/last-rewrite"
+printf 'sensitive stale flat text' > "$CLAUDISH_LOCAL_DIR/last-original"
+printf 'sensitive stale flat text' > "$CLAUDISH_LOCAL_DIR/last-rewrite"
+touch -t 202001010000 "$CLAUDISH_LOCAL_DIR/last-original" "$CLAUDISH_LOCAL_DIR/last-rewrite"
+run_hook m43a ""
+run_hook m43b ""
+[ ! -f "$CLAUDISH_LOCAL_DIR/last-original" ] && [ ! -f "$CLAUDISH_LOCAL_DIR/last-rewrite" ]
+check $? "a stale flat (unsuffixed) pair is pruned like any other stale pair"
+
+# 44. claudish-ctl.sh:405 (should-fix 1): matched must also be validated
+# numeric, or the same silent-passing-of-the-guard bug reopens through the
+# other side of the comparison.
+rm -f "$KEEPF"
+printf '%s\n' 'onlyterm' > "$KEEPF"
+FAKEBIN2="$SANDBOX/fakebin2"; mkdir -p "$FAKEBIN2"
+cat > "$FAKEBIN2/grep" <<'FAKEGREP2'
+#!/bin/sh
+# matched's count comes from a piped "-c '[^[:space:]]'" with no file
+# argument (exactly 2 args); total's comes from the same flag and pattern
+# PLUS a file argument (3 args). Break only the 2-arg (matched) form so
+# this stub does not also mask the earlier total check.
+if [ "$#" = 2 ] && [ "$1" = "-c" ] && [ "$2" = '[^[:space:]]' ]; then
+  exit 0
+fi
+exec /usr/bin/grep "$@"
+FAKEGREP2
+chmod +x "$FAKEBIN2/grep"
+out="$(PATH="$FAKEBIN2:$PATH" CLAUDISH_KEEP_TERMS_FILE="$KEEPF" bash "$PLUG/claudish-ctl.sh" keep remove onlyterm 2>&1)"
+ec=$?
+[ "$ec" -ne 0 ]; check $? "a non-numeric matched count also fails loudly instead of passing the guard"
+[ -f "$KEEPF" ]; check $? "the keep file survives when matched could not be trusted"
+
+# 45. the empty-result guard itself, driven the way a reviewer would: stub
+# awk to return empty at exit 0 for the line-deletion pass specifically
+# (the pass that reads two files and prints survivors), leaving total and
+# matched both trustworthy so the ONLY thing wrong is the deletion result.
+# This is the guard's own central defense and it must have a test that can
+# actually see it fail.
+rm -f "$KEEPF"
+printf '%s\n' 'keepme' 'onlyterm' > "$KEEPF"
+FAKEBIN3="$SANDBOX/fakebin3"; mkdir -p "$FAKEBIN3"
+cat > "$FAKEBIN3/awk" <<'FAKEAWK'
+#!/bin/sh
+case "$1" in
+  'FNR==NR{d[$1];next} !(FNR in d)') exit 0 ;;
+esac
+exec /usr/bin/awk "$@"
+FAKEAWK
+chmod +x "$FAKEBIN3/awk"
+out="$(PATH="$FAKEBIN3:$PATH" CLAUDISH_KEEP_TERMS_FILE="$KEEPF" bash "$PLUG/claudish-ctl.sh" keep remove onlyterm 2>&1)"
+ec=$?
+[ "$ec" -ne 0 ]; check $? "a deletion pass that comes back empty for no real reason fails loudly"
+printf '%s\n' "$out" | grep -Fq 'unexpectedly empty result'
+check $? "the failure names what went wrong"
+[ -f "$KEEPF" ] && [ "$(cat "$KEEPF")" = "keepme"$'\n'"onlyterm" ]
+check $? "the keep file is completely untouched, both terms still there"
+
+# 46. claudish-ctl.sh: the stop list must catch a Tier 2 word regardless of
+# case, since README.md claims absolutely that drift never recommends a
+# word its own documentation forbids; ALL-CAPS was the gap.
+rm -f "$KEEPF"
+for tw in spec plan checklist outcome roadmap batch store gate advisor stage lock chain active future completed index; do
+  UPPER="$(printf '%s' "$tw" | tr '[:lower:]' '[:upper:]')"
+  TITLE="$(printf '%s' "$tw" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
+  printf '%s' "This ${UPPER} note explains the plan." > "$LO"
+  printf '%s' "This note explains the idea." > "$LR"
+  out="$(CTL drift 2>&1)"
+  printf '%s\n' "$out" | grep -Fwq "$UPPER"; [ $? -ne 0 ]
+  check $? "drift never offers the ALL-CAPS Tier 2 word '$UPPER'"
+  printf '%s' "This ${TITLE} note explains the plan." > "$LO"
+  out="$(CTL drift 2>&1)"
+  printf '%s\n' "$out" | grep -Fwq "$TITLE"; [ $? -ne 0 ]
+  check $? "drift never offers the Title-case Tier 2 word '$TITLE'"
+done
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]

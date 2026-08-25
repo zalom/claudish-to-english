@@ -404,8 +404,15 @@ if [ "${CLAUDISH_DRIFT:-1}" = "1" ]; then
     [ -f "$_ld/last-rewrite" ] && chmod 600 "$_ld/last-rewrite" 2>/dev/null
     # Opportunistic prune of other sessions' pairs: one pair per session id
     # would otherwise accumulate forever, each holding full message text,
-    # until an explicit /claudish reset. Mirrors the buffer sweep above.
-    find "$_ld" -maxdepth 1 -type f \( -name 'last-original.*' -o -name 'last-rewrite.*' \) -mtime +7 -exec rm -f {} + 2>/dev/null || true
+    # until an explicit /claudish reset. No dot in the glob: session_id is
+    # "nosession" only when the JSON key itself is null, and // does not
+    # defend against an EMPTY STRING, so an empty session_id also lands on
+    # the flat, unsuffixed pair. A dotted glob (last-original.*) never
+    # matches that flat pair, so it would sit there forever, retained
+    # against the documented 7-day promise. This sweep runs before the
+    # write below, so pruning the pair this very message is about to
+    # replace is harmless.
+    find "$_ld" -maxdepth 1 -type f \( -name 'last-original*' -o -name 'last-rewrite*' \) -mtime +7 -exec rm -f {} + 2>/dev/null || true
     ( umask 077
       printf '%s' "$full"    > "$_lo" 2>/dev/null || true
       printf '%s' "$rewrite" > "$_lr" 2>/dev/null || true )

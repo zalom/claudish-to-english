@@ -450,7 +450,10 @@ disk.** With `CLAUDISH_DRIFT=1` (the default) every rewrite writes the last
 original assistant message and its last rewrite to
 `~/.claude/claudish-local/last-original` and `last-rewrite`, one pair per
 session id (suffixed with the session id when Claude Code provides one, so
-two open sessions never read or overwrite each other's message), in a
+two open sessions writing at once never overwrite each other's message; on
+read, `/claudish drift` uses its own session's pair when one exists and
+otherwise falls back to the newest pair stored, rather than reporting
+nothing while data sits on disk), in a
 directory the plugin creates at mode `700` with every file in it at `600`,
 owner-only regardless of which provider is configured. A pair no session
 has touched in 7 days is pruned automatically; `/claudish reset` deletes

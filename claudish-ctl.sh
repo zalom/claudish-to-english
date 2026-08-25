@@ -386,6 +386,7 @@ keep_remove() {  # $1 = one term, matched as a whole line, commas included
   lines="$(keep_raw_normalized | grep -nxF -- "$term" | cut -d: -f1)"
   [ -n "$lines" ] || fail "\"$term\" is not in the keep list (see /claudish keep list)"
   matched="$(printf '%s\n' "$lines" | grep -c '[^[:space:]]')"
+  case "$matched" in ''|*[!0-9]*) fail "cannot rewrite $KEEP_FILE" ;; esac
   # Delete by line number via a two-file awk join (numbers file first,
   # populates an array; KEEP_FILE second, prints anything not in it), which
   # has no command-count ceiling the way "1d;2d;3d;...;841d" does under BSD
@@ -1194,6 +1195,13 @@ index
 DRIFT_TIER2_EOF
 )"
     common="${KEEP_NL}${_drift_common}${KEEP_NL}${_drift_tier2}${KEEP_NL}"
+    # Lowercased once here, and per token in the loop below, so the
+    # common-word/Tier 2 match is case-INSENSITIVE: README.md claims
+    # absolutely that drift never recommends a word its own documentation
+    # forbids, and ALL-CAPS or Title-case spellings are common enough (an
+    # acronym, a sentence-initial word) that a case-sensitive test would
+    # not back that claim up.
+    common_lc="$(printf '%s' "$common" | tr '[:upper:]' '[:lower:]')"
     while IFS= read -r tok; do
       [ -n "$tok" ] || continue
       [ "$nhits" -ge 20 ] && break
@@ -1207,10 +1215,9 @@ DRIFT_TIER2_EOF
       case "$tok" in
         *-*) case "$tok" in ?*[A-Z]*|*.*) ;; *) continue ;; esac ;;
       esac
-      # In the common-word / Tier 2 list above? A case-sensitive whole-word
-      # test, so this still misses a stop word spelled with capitals the
-      # list does not carry; that is a known gap, not a claim otherwise.
-      case "$common" in *"${KEEP_NL}${tok}${KEEP_NL}"*) continue ;; esac
+      # In the common-word / Tier 2 list above, in any case?
+      tok_lc="$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')"
+      case "$common_lc" in *"${KEEP_NL}${tok_lc}${KEEP_NL}"*) continue ;; esac
       # Already protected, whole term or a word inside a multi-word one?
       case "$prot" in *"${KEEP_NL}${tok}${KEEP_NL}"*) continue ;; esac
       case "$protwords" in *"${KEEP_NL}${tok}${KEEP_NL}"*) continue ;; esac
