@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-25
+
 ### Added
 - **Anthropic oauth mode, hardened**: on top of PR #20's
   `CLAUDISH_ANTHROPIC_AUTH=oauth`, the access token now comes from the macOS
