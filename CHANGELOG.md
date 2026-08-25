@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-25
+
 ### Added
 - **Protected terms**: a list of words the rewrite must keep exactly as
   written, so the plain-language pass stops renaming the things it is
