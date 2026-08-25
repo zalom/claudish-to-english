@@ -423,13 +423,14 @@ frontmatter, so the frontmatter stays on line 1 where parsers expect it.
 
 ## Providers
 
-Rewrites go through one of four providers, selected with `CLAUDISH_PROVIDER`
+Rewrites go through one of five providers, selected with `CLAUDISH_PROVIDER`
 (both hooks share the setting). The default is unchanged from upstream: local
 ollama, nothing leaves your machine.
 
 | Provider | Endpoint | Key | Default model |
 |---|---|---|---|
 | `ollama` (default) | `CLAUDISH_OLLAMA` (`http://localhost:11434`) | none | `gemma4:26b-mlx` |
+| `claude` | Claude Code itself, headless (`claude -p`); the CLI's own login | none | `claude-haiku-4-5` |
 | `codex` | OpenAI codex CLI (`codex exec`) — uses the CLI's own login | none | *(CLI default)* |
 | `anthropic` | `CLAUDISH_ANTHROPIC_URL` (`https://api.anthropic.com`) + `/v1/messages` | `CLAUDISH_ANTHROPIC_KEY` or `ANTHROPIC_API_KEY` | `claude-haiku-4-5` |
 | `openai` | `CLAUDISH_OPENAI_URL` + `/chat/completions` | `CLAUDISH_OPENAI_KEY` or `OPENAI_API_KEY` | `gpt-5.6-luna` |
@@ -469,6 +470,19 @@ export CLAUDISH_PROVIDER=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
 export CLAUDISH_MODEL=claude-haiku-4-5      # the default; override to taste
 
+# Anthropic — no API key: ride the Claude Code login you're already using.
+# Re-reads the OAuth access token from ~/.claude/.credentials.json on every
+# call (Claude Code keeps it fresh while running, and these hooks only run
+# while it runs), and authenticates with Authorization: Bearer + the
+# oauth-2025-04-20 beta flag instead of x-api-key. Rewrites then ride your
+# Claude subscription — no separate API billing. UNOFFICIAL: Anthropic has
+# not blessed third-party use of the Claude Code token, so this mode may stop
+# working without warning; when it does, the hook fails open (original text,
+# once-per-session notice) like every other failure.
+export CLAUDISH_PROVIDER=anthropic
+export CLAUDISH_ANTHROPIC_AUTH=oauth
+export CLAUDISH_MODEL=claude-haiku-4-5      # the default; override to taste
+
 # OpenAI — GPT-5.6 Luna
 export CLAUDISH_PROVIDER=openai
 export OPENAI_API_KEY=sk-...
@@ -480,6 +494,35 @@ export CLAUDISH_PROVIDER=openai
 export CLAUDISH_OPENAI_URL=http://localhost:1234/v1
 export CLAUDISH_MODEL=qwen3-30b
 ```
+
+### Anthropic oauth mode, usage ledger, and the claude provider
+
+`CLAUDISH_ANTHROPIC_AUTH=oauth` reads the access token from the macOS login
+Keychain first (item `Claude Code-credentials`), checking `expiresAt` before
+using it; `~/.claude/.credentials.json` is the fallback on other platforms.
+Only `accessToken` is extracted; the refresh token never lands in a
+variable or a file. The token reaches `curl` only through a `0600` temp file
+used with `curl -K`, never on the command line (visible to other local users
+via `ps`) and never logged; the file is removed on exit and if the hook is
+killed mid-request.
+
+Every oauth call appends one line to a tab-separated usage ledger,
+`usage.log` under `$CLAUDISH_LOCAL_DIR` (default `~/.claude/claudish-local`),
+11 columns in order: epoch, caller, model, HTTP status, input tokens, output
+tokens, 5-hour utilization percent, 7-day utilization percent, 5-hour reset
+epoch, cost, session id. No message content is ever logged, only token
+counts, the subscription meters the API returns, and (on the `claude`
+provider) the cost it reports.
+
+`CLAUDISH_OAUTH_MAX_UTIL` sets an integer percent cap: once the last oauth
+response put the 5-hour subscription window at or above it, rewrites skip
+and fail open (original text, once-per-session notice) until that window
+resets, rather than risk spending past the cap.
+
+`CLAUDISH_PROVIDER=claude` is a second, sanctioned path: it runs the
+rewrite through Claude Code itself, headless (`claude -p` on Haiku), using
+the CLI's own login rather than a borrowed token. It is the supported
+alternative for whoever would rather not run in oauth mode at all.
 
 Notes:
 
@@ -619,20 +662,29 @@ claudish-to-english/
 
 ## Tests and evals
 
+Tests are hermetic: no network, no keys, no user settings, safe for CI.
+Evals spend real model calls and are run by hand.
+
 - `tests/test-rewrite-prompt.sh` runs the real `rewrite.sh` with a stub
   `providers.sh` and checks the prompt it builds: the message is framed as
   text to rewrite, the user turn is the untouched message behind a
   "Rewrite this assistant message:" line, and the framing survives the
-  style presets, a custom prompt file, and the context line. No network, no
-  keys; safe for CI.
+  style presets, a custom prompt file, and the context line.
+- `tests/test-anthropic-auth.sh` covers both auth paths of the anthropic
+  provider with `curl` and `security` stubbed on `PATH`: an API key travels
+  as `x-api-key` in the private `-K` file and never on the command line;
+  oauth mode reads the Keychain token, sends it as `Authorization: Bearer`
+  with the beta flag, honors `expiresAt`, falls back to
+  `~/.claude/.credentials.json`, respects the `CLAUDISH_OAUTH_MAX_UTIL`
+  marker, writes the 11-column ledger with no message content, and keeps the
+  refresh token out of every file and the access token out of the
+  environment.
 - `evals/rewrite-prompt-eval.sh` replays the fixtures in `evals/fixtures/`
   through the real hook and the real model, several runs each, and counts
-  how often the model answered the message instead of rewriting it. It
-  spends model calls, so run it by hand when the prompt or the model
-  changes. `CLAUDISH_EVAL_AUTH` picks the path: `claude` (default, headless
-  `claude -p`), `oauth`, `apikey` (skips without a key), or `env`.
-  `CLAUDISH_EVAL_PROVIDERS` points it at another `providers.sh` when the
-  path you want lives on a different branch.
+  how often the model answered the message instead of rewriting it.
+  `CLAUDISH_EVAL_AUTH` picks the path: `claude` (default, headless
+  `claude -p`), `oauth`, `apikey` (skips without a key), or `env`;
+  `CLAUDISH_EVAL_RUNS` sets the runs per fixture.
 
 ## License
 
