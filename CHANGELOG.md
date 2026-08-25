@@ -17,15 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strings, never patterns, and both the display hook and the Markdown hook
   honor them. With no terms set, the prompt is unchanged. The list file can
   document itself with `#` comments and blank lines; `keep-terms.example`
-  ships a commented starting point that adds nothing until you uncomment it;
-  and `/claudish keep import <file>` merges a file of terms in, comments
-  and all, without rewriting what is already there. `/claudish drift`
-  compares the last original message against its last rewrite and prints
-  the protected-looking words that got dropped, plus a ready
-  `/claudish keep ...` line to fix it; it never adds anything on its own.
-  This is enabled by `CLAUDISH_DRIFT` (default on), which stores the last
-  original and the last rewrite under `CLAUDISH_LOCAL_DIR`, overwritten
-  every message and cleared by `/claudish reset`.
+  is a commented starting point that finds no terms and reports an error if
+  you import it unchanged; and `/claudish keep import <file>` merges a
+  file of terms in, comments and all, without rewriting what is already
+  there. `/claudish drift` compares the last original message against its
+  last rewrite and prints, as a plain list, the protected-looking words
+  that got dropped after a small filter (no pure numbers, nothing under 4
+  characters, no fragment of an already protected multi-word term, no
+  common word, no hyphenated word without an uppercase letter or a dot); it
+  never prints a ready-to-run command and never adds anything on its own.
+  This is enabled by `CLAUDISH_DRIFT`, on by default and turned off by
+  any value other than the literal `1`, which stores the last original and the last
+  rewrite under `CLAUDISH_LOCAL_DIR`, session-suffixed, in a directory the
+  plugin creates at mode `700` with both files at `600`, cleared by
+  `/claudish reset`.
 
 ## [0.7.0] - 2026-08-25
 

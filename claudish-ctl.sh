@@ -262,6 +262,19 @@ keep_write() {  # $1 = newline separated clean terms; empty removes the file
   fi
 }
 
+# Position-preserving normalized copy of the raw keep FILE: every line goes
+# through the SAME control-character strip, edge trim and 64 character cut
+# the read path applies (_claudish_keep_norm's clean), so an interior tab or
+# an over-length line still compares equal to its cleaned form. A comment or
+# blank line comes back BLANK (never dropped), so line numbers still map
+# 1:1 onto the raw file and a comment can never accidentally equal a term.
+keep_raw_normalized() {
+  [ -f "$KEEP_FILE" ] || return 0
+  sed -e 's/^[[:space:]]*#.*$//' "$KEEP_FILE" \
+    | sed -e 's/[[:cntrl:]]//g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | LC_ALL=C cut -c "1-${CLAUDISH_KEEP_MAX_LEN:-64}"
+}
+
 # Append clean terms to the keep FILE, keeping whatever is already in it
 # (comments included). $1 = newline separated clean terms. Sets KEEP_ADDED to
 # the terms actually written and KEEP_DUP to how many were already there.
@@ -269,7 +282,11 @@ keep_write() {  # $1 = newline separated clean terms; empty removes the file
 # subprocess, no pipe, and never a pattern match against the term itself.
 keep_append() {
   KEEP_ADDED=""; KEEP_DUP=0
-  known="${KEEP_NL}$(claudish_keep_file_terms)${KEEP_NL}"
+  # Dedup against every RAW term line, not the capped/deduped read: a term
+  # sitting past the 200 cap is invisible to claudish_keep_file_terms, and
+  # deduping against that capped view let a repeated add past the cap write
+  # a second copy of the same line every time.
+  known="${KEEP_NL}$(keep_raw_normalized | grep -v '^$')${KEEP_NL}"
   while IFS= read -r t; do
     [ -n "$t" ] || continue
     case "$known" in
@@ -281,13 +298,12 @@ keep_append() {
 $1
 KEEP_APPEND_EOF
   [ -n "$KEEP_ADDED" ] || return 0
-  # A leading newline when the file already has content: a stray blank line is
-  # harmless (blank lines are skipped on read) and it is cheaper than probing
-  # whether the last byte is a newline.
-  if [ -s "$KEEP_FILE" ]; then
+  # A leading newline only when the file has content that does NOT already
+  # end in one, so a repeated add never grows a blank line between entries.
+  if [ -s "$KEEP_FILE" ] && [ "$(tail -c1 "$KEEP_FILE" 2>/dev/null | wc -l | tr -d ' ')" != "1" ]; then
     { printf '\n%s' "$KEEP_ADDED" >> "$KEEP_FILE"; } 2>/dev/null || fail "cannot write $KEEP_FILE"
   else
-    { printf '%s' "$KEEP_ADDED" > "$KEEP_FILE"; } 2>/dev/null || fail "cannot write $KEEP_FILE"
+    { printf '%s' "$KEEP_ADDED" >> "$KEEP_FILE"; } 2>/dev/null || fail "cannot write $KEEP_FILE"
   fi
   return 0
 }
@@ -295,22 +311,24 @@ KEEP_APPEND_EOF
 # Warn once when the file now holds as many terms as the read path will use.
 # When KEEP_ADDED (set by keep_append) names the terms just written, name
 # whichever of those specifically fell past the cap, so the user learns THEIR
-# term was the one dropped rather than a generic notice.
+# term was the one dropped rather than a generic notice. Sets KEEP_CAP_DROPPED
+# (possibly empty) so a caller can keep its own "added" report honest instead
+# of claiming a term was added when it was actually dropped by the cap.
 keep_cap_note() {
+  KEEP_CAP_DROPPED=""
   c="$(claudish_keep_file_terms | grep -c '[^[:space:]]')"
   [ "$c" -ge "${CLAUDISH_KEEP_MAX_TERMS:-200}" ] || return 0
-  dropped=""
   if [ -n "${KEEP_ADDED:-}" ]; then
     _cftmp="$(mktemp "${TMPDIR:-/tmp}/claudish-capped.XXXXXX" 2>/dev/null)"
     if [ -n "$_cftmp" ]; then
       claudish_keep_file_terms > "$_cftmp" 2>/dev/null
-      dropped="$(printf '%s\n' "$KEEP_ADDED" | grep -vFxf "$_cftmp" 2>/dev/null)"
+      KEEP_CAP_DROPPED="$(printf '%s\n' "$KEEP_ADDED" | grep -vFxf "$_cftmp" 2>/dev/null)"
       rm -f "$_cftmp" 2>/dev/null
     fi
   fi
-  if [ -n "$dropped" ]; then
+  if [ -n "$KEEP_CAP_DROPPED" ]; then
     printf 'claudish-ctl: the keep list is full at %s terms; not added: %s\n' \
-      "${CLAUDISH_KEEP_MAX_TERMS:-200}" "$(printf '%s' "$dropped" | tr '\n' ',' | sed 's/,/, /g; s/, $//')" >&2
+      "${CLAUDISH_KEEP_MAX_TERMS:-200}" "$(printf '%s' "$KEEP_CAP_DROPPED" | tr '\n' ',' | sed 's/,/, /g; s/, $//')" >&2
   else
     printf 'claudish-ctl: the keep list is full at %s terms; anything past that is ignored\n' \
       "${CLAUDISH_KEEP_MAX_TERMS:-200}" >&2
@@ -318,34 +336,70 @@ keep_cap_note() {
   return 0
 }
 
+# $1 = KEEP_ADDED-shaped newline list, $2 = KEEP_CAP_DROPPED-shaped newline
+# list (may be empty). Prints $1 with any lines also present in $2 removed,
+# so a caller's "added" report never claims a term the cap note just said
+# was dropped.
+keep_added_minus_dropped() {
+  if [ -z "${2:-}" ]; then
+    printf '%s' "$1"
+    return 0
+  fi
+  _dtmp="$(mktemp "${TMPDIR:-/tmp}/claudish-dropped.XXXXXX" 2>/dev/null)"
+  if [ -z "$_dtmp" ]; then
+    printf '%s' "$1"
+    return 0
+  fi
+  printf '%s\n' "$2" > "$_dtmp"
+  printf '%s\n' "$1" | grep -vFxf "$_dtmp" 2>/dev/null
+  rm -f "$_dtmp" 2>/dev/null
+}
+
 keep_add() {  # $1 = the whole argument string, comma separated
   new="$(_claudish_keep_norm "$1" "")"
   [ -n "$new" ] || fail "nothing to add (use /claudish keep <term>[, <term>...])"
   keep_append "$new"
   keep_cap_note
-  keep_summary added "$KEEP_ADDED"
+  reported="$(keep_added_minus_dropped "$KEEP_ADDED" "$KEEP_CAP_DROPPED")"
+  keep_summary added "$reported"
 }
 
 keep_remove() {  # $1 = one term, matched as a whole line, commas included
   term="$(_claudish_keep_norm "" "$1")"
   [ -n "$term" ] || fail "usage: /claudish keep remove <term>"
+  # A term cannot start with "#" (it would be a comment, never a term), so
+  # refuse up front rather than let one match and delete a real comment.
+  case "$term" in '#'*) fail "\"$term\" is not in the keep list (see /claudish keep list)" ;; esac
   [ -f "$KEEP_FILE" ] || fail "\"$term\" is not in the keep list (see /claudish keep list)"
-  # Match against each raw line with surrounding whitespace trimmed (so a
-  # hand-indented term still matches), then delete by line number. grep -xF
-  # is a whole-line, fixed-string test on the trimmed copy: unlike awk -v it
-  # never expands a backslash in the term and never compares numeric
-  # look-alikes (0, 0.0, 1e3, 1000, +7, 7) as equal. Comments and blank lines
-  # are untouched: a comment never equals a term, so it is never selected.
-  lines="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$KEEP_FILE" | grep -nxF -- "$term" | cut -d: -f1)"
+  total="$(awk 'END{print NR}' "$KEEP_FILE")"
+  # Match against the read path's own normalization (control characters
+  # stripped, edges trimmed, cut to 64), not just a whitespace trim, so a
+  # term the sanitizer reshaped (an interior tab, an over-length line)
+  # still matches. grep -nxF on the normalized copy: whole-line, fixed
+  # string, never a pattern, never awk (no backslash expansion, no numeric
+  # look-alike coercion).
+  lines="$(keep_raw_normalized | grep -nxF -- "$term" | cut -d: -f1)"
   [ -n "$lines" ] || fail "\"$term\" is not in the keep list (see /claudish keep list)"
-  sed_expr=""
-  while IFS= read -r ln; do
-    [ -n "$ln" ] || continue
-    sed_expr="${sed_expr}${sed_expr:+;}${ln}d"
-  done <<KEEP_REMOVE_EOF
-$lines
-KEEP_REMOVE_EOF
-  out="$(sed -e "$sed_expr" "$KEEP_FILE")"
+  matched="$(printf '%s\n' "$lines" | grep -c '[^[:space:]]')"
+  # Delete by line number via a two-file awk join (numbers file first,
+  # populates an array; KEEP_FILE second, prints anything not in it), which
+  # has no command-count ceiling the way "1d;2d;3d;...;841d" does under BSD
+  # sed (BSD sed refuses more than 840 -e commands, and past that point the
+  # unbounded expression above used to fail silently and hand keep_write an
+  # empty string, which took the "clear the whole file" branch).
+  _numf="$(mktemp "${TMPDIR:-/tmp}/claudish-lines.XXXXXX" 2>/dev/null)" || fail "cannot create a temp file"
+  printf '%s\n' "$lines" > "$_numf"
+  out="$(awk 'FNR==NR{d[$1];next} !(FNR in d)' "$_numf" "$KEEP_FILE")"
+  _rc=$?
+  rm -f "$_numf" 2>/dev/null
+  [ "$_rc" -eq 0 ] || fail "cannot rewrite $KEEP_FILE"
+  # An empty result is only correct if EVERY line in the file matched. Any
+  # other empty result is a bug (a filter that silently ate the file), never
+  # a clear: refuse to hand it to keep_write, which would otherwise take the
+  # rm-the-whole-file branch and look like a successful, quiet removal.
+  if [ -z "$out" ] && [ "$total" -gt "$matched" ]; then
+    fail "cannot rewrite $KEEP_FILE: removal produced an unexpectedly empty result"
+  fi
   keep_write "$out"
   keep_summary removed "$term"
 }
@@ -359,9 +413,10 @@ keep_import() {  # $1 = path to a file of terms, one per line, # comments allowe
   new="$(_claudish_keep_norm "" "$(claudish_keep_strip_comments "$p")")"
   [ -n "$new" ] || fail "no terms in $p (blank lines and lines starting with # are skipped)"
   keep_append "$new"
-  added="$(printf '%s' "$KEEP_ADDED" | grep -c '[^[:space:]]')"
-  case "$added" in ''|*[!0-9]*) added=0 ;; esac
   keep_cap_note
+  reported="$(keep_added_minus_dropped "$KEEP_ADDED" "$KEEP_CAP_DROPPED")"
+  added="$(printf '%s\n' "$reported" | grep -c '[^[:space:]]')"
+  case "$added" in ''|*[!0-9]*) added=0 ;; esac
   printf 'claudish: imported %s: %s added, %s already there\n' "$p" "$added" "$KEEP_DUP"
   keep_summary
 }
@@ -374,15 +429,13 @@ keep_list() {
     return 0
   fi
   e="$(claudish_keep_env_terms)"
-  LF="
-"
   n="$(printf '%s\n' "$t" | grep -c '[^[:space:]]')"
   out="claudish keep terms ($n):"$'\n'
   while IFS= read -r term; do
     [ -n "$term" ] || continue
-    case "$LF$e$LF" in
-      *"$LF$term$LF"*) out="${out}  $(printf '%-24s' "$term") env CLAUDISH_KEEP_TERMS"$'\n' ;;
-      *)                out="${out}  $(printf '%-24s' "$term") /claudish keep"$'\n' ;;
+    case "$KEEP_NL$e$KEEP_NL" in
+      *"$KEEP_NL$term$KEEP_NL"*) out="${out}  $(printf '%-24s' "$term") env CLAUDISH_KEEP_TERMS"$'\n' ;;
+      *)                         out="${out}  $(printf '%-24s' "$term") /claudish keep"$'\n' ;;
     esac
   done <<KEEPLIST
 $t
@@ -440,59 +493,83 @@ case "$cmd" in
     # Which protected-looking words did the last rewrite drop? rewrite.sh stores
     # the last original and the last rewrite side by side, so this compares two
     # halves of the SAME message instead of guessing at a transcript the way
-    # `last` has to. It NEVER changes the keep list: it prints the command to run.
+    # `last` has to. It NEVER changes the keep list; see the filter below for
+    # why it never prints a ready-to-run command either.
     [ "$KEEP_OK" = "1" ] || fail "keep-terms.sh not found next to claudish-ctl.sh"
     LD="${CLAUDISH_LOCAL_DIR:-$HOME/.claude/claudish-local}"
-    if [ ! -f "$LD/last-original" ] || [ ! -f "$LD/last-rewrite" ]; then
+    SID="${CLAUDE_CODE_SESSION_ID:-}"
+    case "$SID" in
+      ""|nosession) LO="$LD/last-original"; LR="$LD/last-rewrite" ;;
+      *)             LO="$LD/last-original.$SID"; LR="$LD/last-rewrite.$SID" ;;
+    esac
+    if [ ! -f "$LO" ] || [ ! -f "$LR" ]; then
       printf 'claudish-ctl: no stored rewrite yet. Let one assistant message go through with the rewrite on, then run /claudish drift (CLAUDISH_DRIFT=0 turns the storing off).\n' >&2
       exit 1
     fi
     # Fenced code blocks are dropped by the tldr preset by design, so counting
-    # them would report every identifier in every code block as lost.
-    cand="$(awk 'BEGIN{f=0} /^```/{f=!f; next} f==0{print}' "$LD/last-original" \
+    # them would report every identifier in every code block as lost. The
+    # fence marker may be indented inside a list item, and an unterminated
+    # fence (an odd number of markers) means the file is not reliably split
+    # into code/prose at all, so fall back to treating the whole message as
+    # prose rather than silently discarding everything after the opener.
+    _fences="$(grep -c '^[[:space:]]*```' "$LO" 2>/dev/null)"
+    case "$_fences" in *[!0-9]*) _fences=0 ;; esac
+    if [ $((_fences % 2)) -eq 0 ] && [ "$_fences" -gt 0 ]; then
+      _body="$(awk 'BEGIN{f=0} /^[[:space:]]*```/{f=!f; next} f==0{print}' "$LO")"
+    else
+      _body="$(cat "$LO")"
+    fi
+    cand="$(printf '%s\n' "$_body" \
       | tr -c 'A-Za-z0-9._-' '\n' \
       | sed -e 's/^[._-]*//' -e 's/[._-]*$//' \
       | sort -u)"
     prot="${KEEP_NL}$(claudish_keep_terms 2>/dev/null)${KEEP_NL}"
+    # Every protected term split into its own words too, so a candidate that
+    # is only a FRAGMENT of a multi-word term ("delivery" out of "delivery
+    # lock") is skipped rather than offered as if it were its own word.
+    protwords="${KEEP_NL}$(claudish_keep_terms 2>/dev/null | tr -c 'A-Za-z0-9._-' '\n' | grep -v '^$')${KEEP_NL}"
     hits=""; nhits=0
     while IFS= read -r tok; do
       [ -n "$tok" ] || continue
       [ "$nhits" -ge 20 ] && break
-      # Does it look like a term rather than ordinary English? An uppercase
-      # letter after the first position, or a dot, hyphen or digit, or simply
-      # long and not one of a few common words.
-      looks=0
+      # A small, cheap filter, not a claim of precision: drop a pure number
+      # (never a protected term), anything under 4 characters, and a
+      # hyphenated token with neither an uppercase letter nor a dot, since
+      # de-hyphenating an ordinary compound is exactly what a plain-language
+      # rewrite should be free to do.
+      case "$tok" in ''|*[!0-9]*) ;; *) continue ;; esac
+      [ "${#tok}" -ge 4 ] || continue
       case "$tok" in
-        ?*[A-Z]*)        looks=1 ;;
-        *[0-9]*|*.*|*-*) looks=1 ;;
+        *-*) case "$tok" in ?*[A-Z]*|*.*) ;; *) continue ;; esac ;;
       esac
-      if [ "$looks" = "0" ] && [ "${#tok}" -ge 8 ]; then
-        case "$tok" in
-          because|therefore|something|everything|different|available|important|following|remaining|assistant|original|question|sentence|probably|actually|anything|possible|together) ;;
-          *) looks=1 ;;
-        esac
-      fi
-      [ "$looks" = "1" ] || continue
-      # Already protected? Exact whole-line test, no subprocess, no pipe.
+      # A short list of common words the filter above cannot catch on its
+      # own; deliberately small, a floor not a proof.
+      case "$tok" in
+        because|therefore|something|everything|different|available|important|following|remaining|assistant|original|question|sentence|probably|actually|anything|possible|together|already|message|documents|upstream) continue ;;
+      esac
+      # Already protected, whole term or a word inside a multi-word one?
       case "$prot" in *"${KEEP_NL}${tok}${KEEP_NL}"*) continue ;; esac
+      case "$protwords" in *"${KEEP_NL}${tok}${KEEP_NL}"*) continue ;; esac
       # Still in the rewrite? -F so the token is never a pattern, -w so a
       # substring does not count, reading the file directly so nothing can
       # take a SIGPIPE.
-      grep -qFw -- "$tok" "$LD/last-rewrite" 2>/dev/null && continue
+      grep -qFw -- "$tok" "$LR" 2>/dev/null && continue
       hits="${hits}${hits:+, }$tok"
       nhits=$((nhits + 1))
     done <<DRIFT_EOF
 $cand
 DRIFT_EOF
     if [ -z "$hits" ]; then
-      printf '\n  claudish drift: nothing to flag in the last rewrite.\n\n'
+      printf '\n  claudish drift: no candidates.\n\n'
       exit 0
     fi
+    # A plain list, never a paste-ready command: the point is one deliberate
+    # /claudish keep <term> the owner types after judging a candidate is
+    # real vocabulary, not a multi-term line he runs without reading it.
     printf '\n  claudish drift: in the last original, not in the last rewrite\n\n'
     printf '  %s\n\n' "$hits"
     printf '  These are candidates to check, not a verdict: a rewrite may drop a word for good\n'
-    printf '  reasons. Cut the ones that do not matter, then run the rest:\n\n'
-    printf '  /claudish keep %s\n\n' "$hits"
+    printf '  reason. Add the ones that are real vocabulary with /claudish keep <term>.\n\n'
     exit 0
     ;;
 esac
@@ -549,7 +626,8 @@ case "$cmd" in
   reset)
     _ld="${CLAUDISH_LOCAL_DIR:-$HOME/.claude/claudish-local}"
     rm -f "$OFF_FILE" "$MODE_FILE" "$STYLE_FILE" "$LANG_FILE" "$MODEL_FILE" "$KEEP_FILE" \
-          "$_ld/last-original" "$_ld/last-rewrite" 2>/dev/null || fail "cannot remove one or more flag files"
+          "$_ld"/last-original "$_ld"/last-original.* \
+          "$_ld"/last-rewrite "$_ld"/last-rewrite.* 2>/dev/null || fail "cannot remove one or more flag files"
     ;;
   cycle)
     case "$(state)" in
