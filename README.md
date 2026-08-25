@@ -660,6 +660,18 @@ claudish-to-english/
 └── README.md
 ```
 
+## Tests
+
+`tests/test-anthropic-auth.sh` covers both auth paths of the anthropic
+provider without any network or real credential: `curl` and `security` are
+stubs on `PATH`. It checks that an API key travels as `x-api-key` in the
+private `-K` file and never on the command line, and that oauth mode reads
+the Keychain token, sends it as `Authorization: Bearer` with the beta flag,
+honors `expiresAt`, falls back to `~/.claude/.credentials.json`, respects
+the `CLAUDISH_OAUTH_MAX_UTIL` marker, writes the 11-column ledger with no
+message content, and keeps the refresh token out of every file and the
+access token out of the environment. Run it with `tests/test-anthropic-auth.sh`.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
